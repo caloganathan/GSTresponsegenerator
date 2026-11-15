@@ -11,9 +11,10 @@ entirely — localhost development only.
 """
 
 import secrets
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
-from fastapi import Header, HTTPException
+from fastapi import Header, HTTPException, Request
 
 from . import config, users
 
@@ -58,9 +59,69 @@ def _auth_disabled() -> bool:
 
 _GUEST_SESSIONS: Dict[str, Dict[str, Any]] = {}
 
+# A guest is anyone on the internet: POST /api/auth/guest asks for no
+# credential. So a guest is admitted to the routes below AND NOTHING ELSE.
+#
+# The first cut of guest mode issued a token that satisfied `require_auth`
+# everywhere, and matters are not scoped per user — so an anonymous caller
+# could list every stored matter and read each one in full, client name and
+# GSTIN included. The list is an ALLOWlist on purpose: a route added later is
+# closed to guests until someone decides otherwise, which is the only safe
+# direction for a credential nobody had to earn.
+#
+# Every entry is a route that works on what the caller sends and stores
+# nothing. Nothing that reads the firm's stored matters, conversations,
+# dashboard, calendar or settings belongs here.
+GUEST_ROUTES = frozenset({
+    ("GET", "/api/features"),
+    ("GET", "/api/auth/check"),
+    ("POST", "/api/auth/logout"),
+    ("GET", "/api/panel/config"),
+    ("POST", "/api/panel/extract"),
+    ("POST", "/api/panel/reconciliation"),
+    ("POST", "/api/panel/estimate"),
+    ("POST", "/api/panel/export-inline"),
+    ("POST", "/api/panel/run"),
+})
+
+# Guest tokens used to live for the life of the process and were never
+# counted, so the endpoint was also a way to grow server memory without limit.
+GUEST_SESSION_TTL_HOURS = 12
+GUEST_SESSION_CAP = 2000
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _prune_guest_sessions() -> None:
+    now = _now()
+    for token in [t for t, g in _GUEST_SESSIONS.items()
+                  if g.get("_expires_at") and g["_expires_at"] <= now]:
+        _GUEST_SESSIONS.pop(token, None)
+    # Oldest first: dicts keep insertion order.
+    while len(_GUEST_SESSIONS) >= GUEST_SESSION_CAP:
+        _GUEST_SESSIONS.pop(next(iter(_GUEST_SESSIONS)), None)
+
+
+def _guest_user(token: str) -> Optional[Dict[str, Any]]:
+    guest = _GUEST_SESSIONS.get(token)
+    if guest is None:
+        return None
+    if guest.get("_expires_at") and guest["_expires_at"] <= _now():
+        _GUEST_SESSIONS.pop(token, None)
+        return None
+    return {k: v for k, v in guest.items() if not k.startswith("_")}
+
+
+def guest_may(method: str, path: str) -> bool:
+    """Whether a guest session is admitted to this route."""
+    return (method.upper(), path.rstrip("/") or "/") in GUEST_ROUTES
+
 
 def create_guest_session() -> Dict[str, Any]:
     """Create an ephemeral in-memory guest session (no data persisted)."""
+    _prune_guest_sessions()
     token = f"guest_{secrets.token_urlsafe(24)}"
     guest_user = {
         "id": f"guest-{secrets.token_hex(6)}",
@@ -75,7 +136,10 @@ def create_guest_session() -> Dict[str, Any]:
             "view_deliberation": True,
         },
     }
-    _GUEST_SESSIONS[token] = guest_user
+    _GUEST_SESSIONS[token] = {
+        **guest_user,
+        "_expires_at": _now() + timedelta(hours=GUEST_SESSION_TTL_HOURS),
+    }
     return {"token": token, "user": guest_user}
 
 
@@ -100,8 +164,9 @@ def resolve_user(authorization: str = "") -> Optional[Dict[str, Any]]:
         _warn_legacy_token_use()
         return dict(LEGACY_USER)
 
-    if token in _GUEST_SESSIONS:
-        return dict(_GUEST_SESSIONS[token])
+    guest = _guest_user(token)
+    if guest is not None:
+        return guest
 
     return users.resolve_session(token)
 
@@ -140,21 +205,40 @@ def _warn_legacy_token_use():
         )
 
 
-async def require_auth(authorization: str = Header(default="")) -> Dict[str, Any]:
-    """FastAPI dependency: authenticate, or 401."""
+def _refuse_guest_outside_allowlist(user: Dict[str, Any], request: Request) -> None:
+    if user.get("is_guest") and not guest_may(request.method, request.url.path):
+        raise HTTPException(
+            status_code=403,
+            detail="Guest sessions cannot reach stored matters or settings. "
+                   "Sign in with a firm account.",
+        )
+
+
+async def require_auth(request: Request,
+                       authorization: str = Header(default="")) -> Dict[str, Any]:
+    """
+    FastAPI dependency: authenticate, or 401.
+
+    A guest session authenticates only on `GUEST_ROUTES`. This runs as the
+    router-level dependency, so the refusal covers every /api route —
+    including ones that do not name `require_auth` themselves.
+    """
     user = resolve_user(authorization)
     if user is None:
         raise HTTPException(status_code=401, detail="Invalid or missing credentials")
+    _refuse_guest_outside_allowlist(user, request)
     return user
 
 
 def require_permission(permission: str):
     """Dependency factory enforcing a named permission."""
 
-    async def _dependency(authorization: str = Header(default="")) -> Dict[str, Any]:
+    async def _dependency(request: Request,
+                          authorization: str = Header(default="")) -> Dict[str, Any]:
         user = resolve_user(authorization)
         if user is None:
             raise HTTPException(status_code=401, detail="Invalid or missing credentials")
+        _refuse_guest_outside_allowlist(user, request)
         if not users.can(user, permission):
             raise HTTPException(
                 status_code=403,

@@ -33,15 +33,21 @@ with the original is limited to function signatures, dictionary keys, import
 statements and framework idiom — matter dictated by the libraries in use
 rather than by any authorial choice.
 
-The Apache License 2.0 in the accompanying LICENSE file is granted by
-CA Loganathan Anandan over this work.
+The MIT License in the accompanying LICENSE file is granted by
+CA Loganathan Anandan over this work. Versions published before the change
+were released under the Apache License 2.0, and copies obtained under those
+terms remain under them.
+
+The MIT License does not itself require this NOTICE file to be carried
+forward, as the Apache License did. The acknowledgement above is asked for
+all the same.
 
 --------------------------------------------------------------------------
 ORIGINAL CONTRIBUTIONS OF THIS PROJECT
 --------------------------------------------------------------------------
 
 The following are original works of CA Loganathan Anandan, written for this
-project and licensed under the Apache License 2.0:
+project and licensed under the MIT License:
 
     The adversarial compliance panel — four counsel organised by role in the
     argument, cross-examination in place of ranking, and chairman

@@ -423,6 +423,7 @@ the ones a deployment must actually decide:
 |---|---|---|
 | `OPENROUTER_API_KEY` | — | Required. Nothing runs without it. |
 | `APP_ACCESS_TOKEN` | *(unset = auth off)* | Shared secret for the login screen. **Never deploy publicly without this or a user account.** |
+| `ALLOW_SELF_REGISTRATION` | `false` | Lets the public create their own account. **Leave off wherever client matters are stored** — the account is a staff member of the workspace and can read all of them. Guest sessions need no setting and are confined to the stateless notice-responder routes. |
 | `STATE_DIR` | parent of `DATA_DIR` | Matters, user accounts and sessions. Must sit inside the mounted volume. |
 | `DATA_DIR` | `data/conversations` | Conversation storage path. |
 | `DEFAULT_PANEL_TIER` | `pro` | `draft` (anonymising) or `pro`. |
@@ -590,10 +591,12 @@ and state paths that can never resolve outside the volume).
 The compliance layer — the panel, citation verification, anonymisation,
 notice intake, reconciliation, the reply pack and the domain packs — is the
 original work of CA Loganathan Anandan and is licensed under the
-**[Apache License 2.0](LICENSE)**. Use it, modify it, run it in your firm,
-build on it commercially. The conditions are the ordinary Apache ones: keep
-the copyright notice, keep the [NOTICE](NOTICE) file, and state what you
-changed.
+**[MIT License](LICENSE)**. Use it, modify it, run it in your firm, build on
+it commercially. The one condition is the ordinary MIT one: keep the copyright
+notice and the permission notice in every copy or substantial portion. Please
+also carry the [NOTICE](NOTICE) file forward — the licence no longer requires
+it, but the acknowledgement in it is owed. Versions published before
+November 2026 were released under the Apache License 2.0.
 
 **On the origin of this project.** It began from
 [karpathy/llm-council](https://github.com/karpathy/llm-council), which carries

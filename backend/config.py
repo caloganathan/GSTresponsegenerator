@@ -201,6 +201,17 @@ ENABLE_GENERAL_COUNCIL = os.getenv(
     "ENABLE_GENERAL_COUNCIL", "false"
 ).lower() in ("1", "true", "yes")
 
+# Whether POST /api/auth/register lets a member of the public create an
+# account. OFF unless asked for, because the account it creates is a `staff`
+# member of THIS firm's workspace and matters are not scoped per user: with
+# it on, anyone who finds the URL can sign themselves up and read every
+# stored matter. Turn it on only for a deployment that holds no client
+# matters, or once matters are scoped to their owner. Named accounts are
+# otherwise created by a partner under Admin > Users.
+ALLOW_SELF_REGISTRATION = os.getenv(
+    "ALLOW_SELF_REGISTRATION", "false"
+).lower() in ("1", "true", "yes")
+
 # ---------------------------------------------------------------------------
 # Token routing
 # ---------------------------------------------------------------------------

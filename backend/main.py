@@ -233,6 +233,12 @@ async def auth_check(user: Dict[str, Any] = Depends(require_auth)):
 @app.post("/api/auth/register")
 async def register(request: RegisterRequest, http_request: Request):
     """Allow a public user to create their own account and sign in immediately."""
+    if not config.ALLOW_SELF_REGISTRATION:
+        raise HTTPException(
+            status_code=403,
+            detail="Self-registration is not enabled on this deployment. "
+                   "Ask a partner to create your account under Admin > Users.",
+        )
     try:
         await asyncio.to_thread(
             users.create_user,
