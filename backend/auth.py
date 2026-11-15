@@ -56,6 +56,35 @@ def _auth_disabled() -> bool:
         return False
 
 
+_GUEST_SESSIONS: Dict[str, Dict[str, Any]] = {}
+
+
+def create_guest_session() -> Dict[str, Any]:
+    """Create an ephemeral in-memory guest session (no data persisted)."""
+    token = f"guest_{secrets.token_urlsafe(24)}"
+    guest_user = {
+        "id": f"guest-{secrets.token_hex(6)}",
+        "email": "guest@session.local",
+        "name": "Guest User",
+        "role": "staff",
+        "is_guest": True,
+        "active": True,
+        "permissions": {
+            **users.ROLE_PERMISSIONS["staff"],
+            "export": True,
+            "view_deliberation": True,
+        },
+    }
+    _GUEST_SESSIONS[token] = guest_user
+    return {"token": token, "user": guest_user}
+
+
+def revoke_guest_session(token: str) -> None:
+    """Remove an ephemeral guest session."""
+    if token:
+        _GUEST_SESSIONS.pop(token, None)
+
+
 def resolve_user(authorization: str = "") -> Optional[Dict[str, Any]]:
     """Return the user for this request, or None if unauthenticated."""
     if _auth_disabled():
@@ -70,6 +99,9 @@ def resolve_user(authorization: str = "") -> Optional[Dict[str, Any]]:
     ):
         _warn_legacy_token_use()
         return dict(LEGACY_USER)
+
+    if token in _GUEST_SESSIONS:
+        return dict(_GUEST_SESSIONS[token])
 
     return users.resolve_session(token)
 

@@ -16,8 +16,8 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import (calculators, config, deadlines, export, intake, ocr, pricing,
-               reconciliation, storage, users)
+from . import (auth as auth_module, calculators, config, deadlines, export,
+               intake, ocr, openrouter, pricing, reconciliation, storage, users)
 from .auth import redact_for_role, require_auth, require_permission, resolve_user
 from .council import (
     generate_conversation_title,
@@ -98,6 +98,12 @@ class ConversationRecord(BaseModel):
 
 
 class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class RegisterRequest(BaseModel):
+    name: str = ""
     email: str
     password: str
 
@@ -219,8 +225,32 @@ async def auth_check(user: Dict[str, Any] = Depends(require_auth)):
         "features": {
             "general_council": config.ENABLE_GENERAL_COUNCIL,
             "ocr": {"available": ocr_ready, "reason": ocr_reason},
+            "has_server_key": bool(config.OPENROUTER_API_KEY),
         },
     }
+
+
+@app.post("/api/auth/register")
+async def register(request: RegisterRequest, http_request: Request):
+    """Allow a public user to create their own account and sign in immediately."""
+    try:
+        await asyncio.to_thread(
+            users.create_user,
+            request.email,
+            request.password,
+            request.name,
+            "staff",
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    client = http_request.client.host if http_request.client else ""
+    session = await asyncio.to_thread(
+        users.authenticate, request.email, request.password, client
+    )
+    if session is None:
+        raise HTTPException(status_code=500, detail="Account created, but sign-in failed.")
+    return session
 
 
 @app.post("/api/auth/login")
@@ -247,10 +277,17 @@ async def login(request: LoginRequest, http_request: Request):
     return session
 
 
+@app.post("/api/auth/guest")
+async def guest_login():
+    """Create an ephemeral guest session where no user or matter data is saved."""
+    return auth_module.create_guest_session()
+
+
 @router.post("/auth/logout")
 async def logout(authorization: str = Header(default="")):
     """Revoke the current session token."""
     token = authorization.split(" ", 1)[-1].strip() if authorization else ""
+    auth_module.revoke_guest_session(token)
     users.revoke_session(token)
     return {"status": "ok"}
 
@@ -468,6 +505,7 @@ async def extract_notice(
     file: UploadFile = File(default=None),
     domain: str = "gst",
     tier: str = config.DEFAULT_TIER,
+    x_openrouter_key: str = Header(default=""),
     user: Dict[str, Any] = Depends(require_auth),
 ):
     """
@@ -505,6 +543,7 @@ async def extract_notice(
             )
         documents.append((upload.filename or "", content))
 
+    key_token = openrouter.set_request_api_key(x_openrouter_key)
     try:
         return await intake.read_notice_set(
             documents, pack, config.get_tier(tier)
@@ -517,6 +556,8 @@ async def extract_notice(
             status_code=500,
             detail="The notice could not be read. Enter the details manually.",
         )
+    finally:
+        openrouter.reset_request_api_key(key_token)
 
 
 @router.post("/panel/reconciliation")
@@ -623,16 +664,71 @@ async def matter_computations(
     return calculators.matter_computations(matter)
 
 
+class InlineExportRequest(BaseModel):
+    intake: Dict[str, Any] = {}
+    result: Dict[str, Any] = {}
+    metadata: Dict[str, Any] = {}
+    domain: str = "gst"
+    tier: str = config.DEFAULT_TIER
+    document: str = "reply"
+
+
+@router.post("/panel/export-inline")
+async def export_inline_report(
+    request: InlineExportRequest,
+    user: Dict[str, Any] = Depends(require_auth),
+):
+    """Build and download a Word (.docx) reply pack in memory without saving a matter."""
+    if not user.get("is_guest") and not users.can(user, "export"):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Your role ({user.get('role')}) does not permit this action",
+        )
+    _require_known_tier(request.tier)
+    tier = config.get_tier(request.tier)
+    if request.document not in ("reply", "file_note"):
+        raise HTTPException(status_code=400, detail="document must be 'reply' or 'file_note'.")
+
+    metadata = dict(request.metadata or {})
+    if tier.get("watermark"):
+        metadata.setdefault("watermark", tier["watermark"])
+
+    matter = {
+        "id": "guest-ephemeral",
+        "domain": request.domain,
+        "tier": request.tier,
+        "status": "complete",
+        "intake": request.intake or {},
+        "result": request.result or {},
+        "metadata": metadata,
+    }
+    if request.document == "file_note":
+        payload = export.build_file_note(matter)
+        filename = export.file_note_filename(matter)
+    else:
+        payload = export.build_filing_reply(matter)
+        filename = export.suggested_filename(matter)
+
+    return Response(
+        content=payload,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.post("/panel/run")
 async def run_panel_endpoint(
     request: PanelRunRequest,
+    x_openrouter_key: str = Header(default=""),
     user: Dict[str, Any] = Depends(require_auth),
 ):
     """Create a matter and stream the panel deliberation as SSE."""
     _require_known_tier(request.tier)
-    matter_id = str(uuid.uuid4())
-    intake = request.intake or {}
-    storage.create_matter(matter_id, intake, request.domain, request.tier, user)
+    is_guest = bool(user.get("is_guest"))
+    matter_id = None if is_guest else str(uuid.uuid4())
+    intake_data = request.intake or {}
+    if not is_guest:
+        storage.create_matter(matter_id, intake_data, request.domain, request.tier, user)
 
     # The stored matter is redacted per-reader on GET; the live stream must be
     # redacted the same way, or a staff user who RUNS the matter reads the
@@ -663,12 +759,14 @@ async def run_panel_endpoint(
         return event
 
     async def event_generator():
+        key_token = openrouter.set_request_api_key(x_openrouter_key)
         try:
-            yield f"data: {json.dumps({'type': 'matter_created', 'matter_id': matter_id})}\n\n"
+            if matter_id:
+                yield f"data: {json.dumps({'type': 'matter_created', 'matter_id': matter_id})}\n\n"
 
             final = None
             async for event in run_panel_stream(
-                intake,
+                intake_data,
                 domain=request.domain,
                 tier_name=request.tier,
                 skip_verification=request.skip_verification,
@@ -677,7 +775,7 @@ async def run_panel_endpoint(
                     final = event
                 yield f"data: {json.dumps(_redact_event(event))}\n\n"
 
-            if final is not None:
+            if final is not None and not is_guest and matter_id:
                 storage.complete_matter(
                     matter_id, final["data"], final.get("metadata", {})
                 )
@@ -687,6 +785,8 @@ async def run_panel_endpoint(
         except Exception as e:
             print(f"Panel error on matter {matter_id}: {e}")
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+        finally:
+            openrouter.reset_request_api_key(key_token)
 
     return StreamingResponse(
         event_generator(),

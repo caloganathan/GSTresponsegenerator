@@ -51,6 +51,7 @@ small tabular figures, and rendering below 300 gives visibly worse readings on
 exactly the annexure rows the amounts come from.
 """
 
+import base64
 import io
 import os
 from typing import Any, Dict, List, Optional, Tuple
@@ -216,39 +217,97 @@ def _lines_from_result(result: Any) -> List[Dict[str, Any]]:
     return lines
 
 
-def ocr_pdf(content: bytes, dpi: int = None, max_pages: int = None) -> Dict[str, Any]:
+def _boxes_from_result(result: Any, width: int, height: int) -> List[Dict[str, Any]]:
     """
-    Read a scanned PDF.
-
-    Returns the text plus everything the reviewer needs to judge it: how many
-    pages were read, the mean and minimum confidence, and every line the
-    engine was unsure about. Raises RuntimeError when OCR is unavailable —
-    callers decide whether that is fatal, and in `intake` it is not.
+    Convert RapidOCR polygon boxes into normalized [0..1] bounding boxes
+    for the Google Lens-style interactive overlay.
     """
-    ok, reason = available()
-    if not ok:
-        raise RuntimeError(reason)
-
-    dpi = dpi or OCR_DPI
-    max_pages = max_pages or OCR_MAX_PAGES
-
-    engine = _get_engine()
-
-    pages_read = 0
-    page_texts: List[str] = []
-    all_lines: List[Dict[str, Any]] = []
-    for page in _iter_pages(content, dpi, max_pages):
-        pages_read += 1
+    if not result or not width or not height:
+        return []
+    boxes: List[Dict[str, Any]] = []
+    for entry in result:
         try:
-            result, _ = engine(page)
-        except Exception:
-            # One unreadable page must not lose the other thirty-nine.
-            page_texts.append("")
+            box, text, confidence = entry[0], entry[1], entry[2]
+        except (IndexError, TypeError):
             continue
-        lines = _lines_from_result(result)
-        all_lines.extend(lines)
-        page_texts.append("\n".join(line["text"] for line in lines))
+        cleaned = str(text).strip() if text else ""
+        if not cleaned:
+            continue
+        xs = [float(point[0]) for point in box]
+        ys = [float(point[1]) for point in box]
+        min_x, max_x = max(0.0, min(xs)), min(float(width), max(xs))
+        min_y, max_y = max(0.0, min(ys)), min(float(height), max(ys))
+        boxes.append({
+            "x": round(min_x / width, 4),
+            "y": round(min_y / height, 4),
+            "w": round(max(0.0, max_x - min_x) / width, 4),
+            "h": round(max(0.0, max_y - min_y) / height, 4),
+            "text": cleaned,
+            "confidence": round(float(confidence), 3),
+        })
+    return boxes
 
+
+def _encode_preview_jpeg(rgb_array: Any, max_width: int = 1200) -> Tuple[str, int, int]:
+    """Encode an RGB numpy array into a web-ready base64 JPEG data URL."""
+    from PIL import Image
+
+    img = Image.fromarray(rgb_array)
+    orig_w, orig_h = img.size
+    if orig_w > max_width:
+        ratio = max_width / float(orig_w)
+        img = img.resize((max_width, max(1, int(orig_h * ratio))), Image.Resampling.LANCZOS)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=82)
+    b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+    return f"data:image/jpeg;base64,{b64}", orig_w, orig_h
+
+
+def render_pdf_previews(content: bytes, max_pages: int = 5) -> List[Dict[str, Any]]:
+    """
+    Render lightweight page previews for a digital PDF (without running OCR).
+    Gracefully returns [] if pypdfium2/Pillow are unavailable.
+    """
+    try:
+        import numpy as np
+        import pypdfium2 as pdfium
+    except ImportError:
+        return []
+
+    previews: List[Dict[str, Any]] = []
+    try:
+        document = pdfium.PdfDocument(io.BytesIO(content))
+    except Exception:
+        return []
+    try:
+        for index in range(min(len(document), max_pages)):
+            page = document[index]
+            bitmap = page.render(scale=150 / 72)
+            rgb = np.asarray(bitmap.to_pil().convert("RGB"))
+            data_url, orig_w, orig_h = _encode_preview_jpeg(rgb, max_width=1100)
+            previews.append({
+                "page": index + 1,
+                "width": orig_w,
+                "height": orig_h,
+                "image": data_url,
+                "boxes": [],
+            })
+            del bitmap, page
+    except Exception:
+        return previews
+    finally:
+        document.close()
+    return previews
+
+
+def _summarize_ocr(
+    page_texts: List[str],
+    all_lines: List[Dict[str, Any]],
+    pages_read: int,
+    dpi: int,
+    truncated: bool,
+    lens_pages: List[Dict[str, Any]],
+) -> Dict[str, Any]:
     text = "\n\n".join(t for t in page_texts if t)
     confidences = [line["confidence"] for line in all_lines]
     doubtful = [line for line in all_lines
@@ -270,8 +329,113 @@ def ocr_pdf(content: bytes, dpi: int = None, max_pages: int = None) -> Dict[str,
         ],
         "doubtful_count": len(doubtful),
         "dpi": dpi,
-        "truncated": pages_read >= max_pages,
+        "truncated": truncated,
+        "lens_pages": lens_pages,
     }
+
+
+def ocr_image(content: bytes, include_preview: bool = True) -> Dict[str, Any]:
+    """
+    Read a scanned notice uploaded directly as an image (PNG, JPG, WEBP).
+    Returns the same summary structure as `ocr_pdf`, plus `lens_pages`.
+    """
+    ok, reason = available()
+    if not ok:
+        raise RuntimeError(reason)
+
+    import numpy as np
+    from PIL import Image, ImageOps
+
+    engine = _get_engine()
+    img = ImageOps.exif_transpose(Image.open(io.BytesIO(content))).convert("RGB")
+    rgb = np.asarray(img)
+    height, width = rgb.shape[0], rgb.shape[1]
+
+    result, _ = engine(rgb)
+    lines = _lines_from_result(result)
+    boxes = _boxes_from_result(result, width, height)
+
+    lens_pages: List[Dict[str, Any]] = []
+    if include_preview:
+        data_url, _, _ = _encode_preview_jpeg(rgb, max_width=1200)
+        lens_pages.append({
+            "page": 1,
+            "width": width,
+            "height": height,
+            "image": data_url,
+            "boxes": boxes,
+        })
+
+    page_text = "\n".join(line["text"] for line in lines)
+    return _summarize_ocr(
+        page_texts=[page_text],
+        all_lines=lines,
+        pages_read=1,
+        dpi=0,
+        truncated=False,
+        lens_pages=lens_pages,
+    )
+
+
+def ocr_pdf(
+    content: bytes,
+    dpi: int = None,
+    max_pages: int = None,
+    include_previews: bool = True,
+    max_preview_pages: int = 5,
+) -> Dict[str, Any]:
+    """
+    Read a scanned PDF.
+
+    Returns the text plus everything the reviewer needs to judge it: how many
+    pages were read, the mean and minimum confidence, and every line the
+    engine was unsure about. Raises RuntimeError when OCR is unavailable —
+    callers decide whether that is fatal, and in `intake` it is not.
+    """
+    ok, reason = available()
+    if not ok:
+        raise RuntimeError(reason)
+
+    dpi = dpi or OCR_DPI
+    max_pages = max_pages or OCR_MAX_PAGES
+
+    engine = _get_engine()
+
+    pages_read = 0
+    page_texts: List[str] = []
+    all_lines: List[Dict[str, Any]] = []
+    lens_pages: List[Dict[str, Any]] = []
+    for page in _iter_pages(content, dpi, max_pages):
+        pages_read += 1
+        try:
+            result, _ = engine(page)
+        except Exception:
+            # One unreadable page must not lose the other thirty-nine.
+            page_texts.append("")
+            continue
+        lines = _lines_from_result(result)
+        all_lines.extend(lines)
+        page_texts.append("\n".join(line["text"] for line in lines))
+
+        if include_previews and len(lens_pages) < max_preview_pages:
+            height, width = page.shape[0], page.shape[1]
+            data_url, _, _ = _encode_preview_jpeg(page, max_width=1200)
+            lens_pages.append({
+                "page": pages_read,
+                "width": width,
+                "height": height,
+                "image": data_url,
+                "boxes": _boxes_from_result(result, width, height),
+            })
+
+    return _summarize_ocr(
+        page_texts=page_texts,
+        all_lines=all_lines,
+        pages_read=pages_read,
+        dpi=dpi,
+        truncated=pages_read >= max_pages,
+        lens_pages=lens_pages,
+    )
 
 
 def describe_quality(result: Dict[str, Any]) -> List[str]:

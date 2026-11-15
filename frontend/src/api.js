@@ -19,6 +19,7 @@ export function apiUrl(path) {
 }
 
 const TOKEN_KEY = 'llm_council_token';
+const OPENROUTER_KEY_STORAGE = 'openrouter_api_key';
 
 export function getAuthToken() {
   return localStorage.getItem(TOKEN_KEY) || '';
@@ -29,9 +30,23 @@ export function setAuthToken(token) {
   else localStorage.removeItem(TOKEN_KEY);
 }
 
+export function getOpenRouterKey() {
+  return localStorage.getItem(OPENROUTER_KEY_STORAGE) || '';
+}
+
+export function setOpenRouterKey(key) {
+  const cleaned = (key || '').trim();
+  if (cleaned) localStorage.setItem(OPENROUTER_KEY_STORAGE, cleaned);
+  else localStorage.removeItem(OPENROUTER_KEY_STORAGE);
+}
+
 function authHeaders() {
+  const headers = {};
   const token = getAuthToken();
-  return token ? { Authorization: `Bearer ${token}` } : {};
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const orKey = getOpenRouterKey();
+  if (orKey) headers['X-OpenRouter-Key'] = orKey;
+  return headers;
 }
 
 export class ApiError extends Error {
@@ -109,6 +124,33 @@ export const api = {
         if (body.detail) detail = body.detail;
       } catch { /* ignore */ }
       throw new ApiError(detail, response.status);
+    }
+    return response.json();
+  },
+
+  async register(name, email, password) {
+    const response = await fetch(apiUrl('/api/auth/register'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, email, password }),
+    });
+    if (!response.ok) {
+      let detail = 'Could not create account';
+      try {
+        const body = await response.json();
+        if (body.detail) detail = body.detail;
+      } catch { /* ignore */ }
+      throw new ApiError(detail, response.status);
+    }
+    return response.json();
+  },
+
+  async guestLogin() {
+    const response = await fetch(apiUrl('/api/auth/guest'), {
+      method: 'POST',
+    });
+    if (!response.ok) {
+      throw new ApiError('Could not start guest session', response.status);
     }
     return response.json();
   },
@@ -192,14 +234,25 @@ export const api = {
     const url = URL.createObjectURL(blob);
     const link = window.document.createElement('a');
     link.href = url;
-    // The backend computes a per-matter filename carrying the client and the
-    // notice (export.suggested_filename / file_note_filename). Discarding it
-    // for a constant meant a partner downloading five matters got
-    // Reply(1).docx … Reply(5).docx, with nothing on disk to say which was
-    // which — and the internal/filing distinction surviving only in the name
-    // is the one thing that must not blur.
     link.download = filename || filenameFromDisposition(response) ||
       (document === 'file_note' ? 'File_Note_INTERNAL.docx' : 'Reply.docx');
+    window.document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  },
+
+  /** Download a Word (.docx) report directly from memory (used in Guest mode). */
+  async downloadInlineReport(payload) {
+    const response = await request('/api/panel/export-inline', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = window.document.createElement('a');
+    link.href = url;
+    link.download = filenameFromDisposition(response) || 'GST_Notice_Reply.docx';
     window.document.body.appendChild(link);
     link.click();
     link.remove();

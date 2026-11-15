@@ -55,7 +55,8 @@ async def _extract_off_loop(filename, content):
 
 
 MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", str(10 * 1024 * 1024)))
-SUPPORTED = (".pdf", ".docx", ".txt")
+IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp")
+SUPPORTED = (".pdf", ".docx", ".txt", *IMAGE_EXTENSIONS)
 
 # Text below this length almost certainly means a scanned page with no text
 # layer rather than a genuinely short notice.
@@ -371,6 +372,37 @@ def extract_document(filename: str, content: bytes) -> Dict[str, Any]:
         )
 
     text = ""
+    lens_pages: List[Dict[str, Any]] = []
+    if name.endswith(IMAGE_EXTENSIONS):
+        engine_ready, reason = ocr.available()
+        if engine_ready:
+            try:
+                ocr_result = ocr.ocr_image(content)
+            except Exception as e:
+                warnings.append(
+                    f"This notice image could not be read by OCR ({e}). "
+                    "Upload a clearer image or paste the text manually."
+                )
+                ocr_result = None
+            else:
+                text = _tidy(ocr_result.get("text", ""))
+                lens_pages = ocr_result.get("lens_pages") or []
+                warnings.extend(ocr.describe_quality(ocr_result))
+        else:
+            warnings.append(
+                "This notice was uploaded as an image. "
+                f"{reason} Until then, paste the text of the notice manually."
+            )
+            ocr_result = None
+        source = "ocr" if text else "none"
+        return {
+            "text": text,
+            "warnings": warnings,
+            "source": source,
+            "ocr": ocr_result,
+            "lens_pages": lens_pages,
+        }
+
     if name.endswith(".pdf"):
         try:
             from pypdf import PdfReader
@@ -453,11 +485,17 @@ def extract_document(filename: str, content: bytes) -> Dict[str, Any]:
             "upload a digitally generated copy."
         )
 
+    if ocr_result and ocr_result.get("lens_pages"):
+        lens_pages = ocr_result["lens_pages"]
+    elif name.endswith(".pdf") and source == "text-layer":
+        lens_pages = ocr.render_pdf_previews(content)
+
     return {
         "text": text,
         "warnings": warnings,
         "source": source,
         "ocr": ocr_result,
+        "lens_pages": lens_pages,
     }
 
 
@@ -1106,6 +1144,7 @@ async def read_notice_set(
     sources: Dict[str, str] = {}
     snippets: Dict[str, Dict[str, Any]] = {}
     read_documents: List[Dict[str, Any]] = []
+    lens_pages: List[Dict[str, Any]] = []
     combined: List[str] = []
     found_defects: List[Dict[str, Any]] = []
     usage = None
@@ -1151,6 +1190,8 @@ async def read_notice_set(
             "source": document["source"],
             "ocr": document["ocr"],
         })
+        for page in document.get("lens_pages") or []:
+            lens_pages.append({**page, "filename": filename})
 
     text = "\n\n".join(t for t in combined if t)
 
@@ -1216,6 +1257,14 @@ async def read_notice_set(
             ". Complete these before running the panel."
         )
 
+    questions = build_clarifying_questions(
+        fields=fields,
+        sources=sources,
+        snippets=snippets,
+        defects_list=found_defects,
+        scanned=any_scanned,
+    )
+
     return {
         "fields": fields,
         "sources": sources,
@@ -1224,6 +1273,8 @@ async def read_notice_set(
         "snippets": snippets,
         "warnings": warnings,
         "documents": read_documents,
+        "lens_pages": lens_pages,
+        "questions": questions,
         "text_length": len(text),
         "scanned": any_scanned,
         "usage": usage,
@@ -1231,3 +1282,128 @@ async def read_notice_set(
         # copy from it. The uploaded files themselves are never persisted.
         "text": text[:MAX_MODEL_CHARS],
     }
+
+
+def build_clarifying_questions(
+    fields: Dict[str, Any],
+    sources: Dict[str, str],
+    snippets: Dict[str, Dict[str, Any]],
+    defects_list: List[Dict[str, Any]],
+    scanned: bool = False,
+) -> List[Dict[str, Any]]:
+    """
+    Generate targeted, plain-English clarifying questions under the Indian GST Act
+    based on what was extracted from the notice, what is missing, and which
+    figures came from OCR.
+    """
+    questions: List[Dict[str, Any]] = []
+
+    if scanned or any(str(v).endswith("-ocr") for v in sources.values()):
+        amt = fields.get("amount_disputed")
+        questions.append({
+            "id": "confirm_ocr_amount",
+            "category": "Scan Verification",
+            "question": (
+                f"OCR read the total disputed amount as INR {amt:,.2f}. "
+                "Please confirm or correct this figure against the notice."
+                if amt is not None else
+                "OCR could not read the total demand amount clearly. What is the exact tax/demand amount in the notice?"
+            ),
+            "type": "text",
+            "field_key": "amount_disputed",
+            "default_value": str(amt) if amt is not None else "",
+            "snippet": (snippets.get("amount_disputed") or {}).get("excerpt", ""),
+            "priority": "high",
+        })
+
+    if not fields.get("gstin"):
+        questions.append({
+            "id": "missing_gstin",
+            "category": "Taxpayer Details",
+            "question": "We could not detect a 15-character GSTIN. Please enter the taxpayer's GSTIN (this also sets the State jurisdiction).",
+            "type": "text",
+            "field_key": "gstin",
+            "default_value": "",
+            "priority": "high",
+        })
+
+    if not fields.get("reply_due_date"):
+        questions.append({
+            "id": "missing_due_date",
+            "category": "Limitation & Deadlines",
+            "question": "What is the reply due date mentioned in the notice (YYYY-MM-DD)?",
+            "type": "text",
+            "field_key": "reply_due_date",
+            "default_value": "",
+            "priority": "high",
+        })
+
+    notice_text_blob = " ".join([
+        str(fields.get("notice_type") or ""),
+        str(fields.get("section_invoked") or ""),
+        str(fields.get("facts") or ""),
+        " ".join(str(d.get("heading") or "") + " " + str(d.get("summary") or "") for d in defects_list),
+    ]).lower()
+
+    if any(k in notice_text_blob for k in ("itc", "2a", "2b", "3b", "input tax", "16(2)", "17(5)", "rule 36")):
+        questions.append({
+            "id": "itc_root_cause",
+            "category": "ITC Reconciliation (s.16 / Rule 36)",
+            "question": "For the ITC mismatch raised in the notice, what is the primary factual position?",
+            "type": "choice",
+            "options": [
+                "Timing difference (invoices accounted/claimed in subsequent month or FY)",
+                "Supplier failed to file GSTR-1 / GSTR-3B (bona fide purchase with tax paid & valid invoice)",
+                "RCM / Import IGST (ICEGATE / Bill of Entry) not reflected in GSTR-2A/2B",
+                "Ineligible / blocked credit u/s 17(5) — already reversed or to be reversed",
+                "Mixed reasons across multiple line items",
+            ],
+            "default_value": "Timing difference (invoices accounted/claimed in subsequent month or FY)",
+            "priority": "high",
+        })
+
+    questions.append({
+        "id": "drc03_paid",
+        "category": "Tax / Interest Payment",
+        "question": "Has any portion of the tax, interest, or penalty already been deposited via DRC-03 or electronic credit/cash ledger?",
+        "type": "choice",
+        "options": [
+            "No — full demand is disputed on merits/limitation",
+            "Yes — tax already paid/reversed via DRC-03 (only interest/penalty or balance disputed)",
+            "Yes — partial payment made; balance disputed",
+        ],
+        "default_value": "No — full demand is disputed on merits/limitation",
+        "priority": "normal",
+    })
+
+    if any(k in notice_text_blob for k in ("74", "fraud", "wilful", "suppression", "misstatement")):
+        questions.append({
+            "id": "section74_intent",
+            "category": "Section 74 / Extended Period",
+            "question": "The notice invokes extended period / fraud (s.74). Are all underlying transactions duly recorded in books of account and GSTR-1/3B returns?",
+            "type": "yes_no",
+            "options": ["Yes — all transactions were disclosed in returns and books", "No — some items were omitted or under-reported"],
+            "default_value": "Yes — all transactions were disclosed in returns and books",
+            "priority": "high",
+        })
+
+    questions.append({
+        "id": "personal_hearing",
+        "category": "Natural Justice (s.75(4))",
+        "question": "Should the reply formally request an opportunity of Personal Hearing u/s 75(4) of the CGST Act before any adverse order is passed?",
+        "type": "yes_no",
+        "options": ["Yes — request Personal Hearing u/s 75(4)", "No"],
+        "default_value": "Yes — request Personal Hearing u/s 75(4)",
+        "priority": "normal",
+    })
+
+    questions.append({
+        "id": "additional_context",
+        "category": "Client Facts & Evidence",
+        "question": "Any additional facts, supporting documents available (invoices, e-way bills, CA certificates, bank proofs), or specific points you want emphasized in the reply?",
+        "type": "text",
+        "default_value": "",
+        "priority": "normal",
+    })
+
+    return questions

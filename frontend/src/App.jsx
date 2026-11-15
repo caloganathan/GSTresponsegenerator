@@ -1,18 +1,21 @@
 import { useCallback, useEffect, useState } from 'react';
-import { api, setAuthToken } from './api';
+import { api, getOpenRouterKey, setAuthToken } from './api';
 import { useTheme } from './theme';
 import Login from './components/Login';
+import OpenRouterKeyGate from './components/OpenRouterKeyGate';
 import Dashboard from './components/Dashboard';
 import PanelWorkspace from './components/PanelWorkspace';
 import MatterList from './components/MatterList';
 import MatterDetail from './components/MatterDetail';
 import AdminPanel from './components/AdminPanel';
 import GeneralCouncil from './components/GeneralCouncil';
+import QuickResponder from './components/QuickResponder';
 import './App.css';
 
 const NAV = [
+  { key: 'quick', label: 'Notice Responder', icon: '⌖' },
   { key: 'dashboard', label: 'Dashboard', icon: '▤' },
-  { key: 'panel', label: 'New Matter', icon: '✦' },
+  { key: 'panel', label: 'Advanced Form', icon: '✦' },
   { key: 'matters', label: 'Matters', icon: '▦' },
   // The generic council is the upstream project this one grew out of. It
   // still works, but no client engagement uses it, and left in the navigation
@@ -27,9 +30,11 @@ export default function App() {
   const [authState, setAuthState] = useState('checking');
   const [user, setUser] = useState(null);
   const [features, setFeatures] = useState({});
-  const [view, setView] = useState('dashboard');
+  const [view, setView] = useState('quick');
   const [activeMatterId, setActiveMatterId] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [openRouterKey, setLocalOpenRouterKey] = useState(() => getOpenRouterKey());
+  const [editingKey, setEditingKey] = useState(false);
 
   const loadSession = useCallback(async () => {
     try {
@@ -114,12 +119,29 @@ export default function App() {
     return <Login onSuccess={loadSession} theme={theme} onToggleTheme={toggle} />;
   }
 
+  const needsApiKey = !features.has_server_key && !openRouterKey;
+  if (needsApiKey || editingKey) {
+    return (
+      <OpenRouterKeyGate
+        hasServerKey={Boolean(features.has_server_key)}
+        onSave={(savedKey) => {
+          setLocalOpenRouterKey(savedKey);
+          setEditingKey(false);
+        }}
+        onCancel={editingKey && !needsApiKey ? () => setEditingKey(false) : undefined}
+        onLogout={handleLogout}
+      />
+    );
+  }
+
   const can = (permission) => Boolean(user?.permissions?.[permission]);
-  const nav = NAV.filter(
-    (item) =>
-      (!item.permission || can(item.permission)) &&
-      (!item.feature || features[item.feature])
-  );
+  const nav = user?.is_guest
+    ? NAV.filter((item) => item.key === 'quick')
+    : NAV.filter(
+        (item) =>
+          (!item.permission || can(item.permission)) &&
+          (!item.feature || features[item.feature])
+      );
 
   return (
     <div className="app">
@@ -150,6 +172,15 @@ export default function App() {
         </nav>
 
         <div className="sidebar-footer">
+          <button
+            className="theme-toggle"
+            onClick={() => setEditingKey(true)}
+            title="Configure your OpenRouter API key"
+          >
+            <span aria-hidden="true">🔑</span>
+            {openRouterKey ? 'API Key (Custom)' : 'Set API Key'}
+          </button>
+
           <button className="theme-toggle" onClick={toggle} title="Toggle theme">
             <span aria-hidden="true">{theme === 'dark' ? '☀' : '☾'}</span>
             {theme === 'dark' ? 'Light mode' : 'Dark mode'}
@@ -161,7 +192,9 @@ export default function App() {
             </div>
             <div className="user-meta">
               <div className="user-name">{user?.name || user?.email}</div>
-              <div className="user-role">{user?.role}</div>
+              <div className="user-role">
+                {user?.is_guest ? 'Guest (No data saved)' : user?.role}
+              </div>
             </div>
           </div>
           <button className="btn btn-ghost btn-sm signout" onClick={handleLogout}>
@@ -171,6 +204,12 @@ export default function App() {
       </aside>
 
       <main className="main">
+        {view === 'quick' && (
+          <QuickResponder
+            onAuthError={handleAuthError}
+            onOpenMatter={onMatterComplete}
+          />
+        )}
         {view === 'dashboard' && (
           <Dashboard
             key={refreshKey}

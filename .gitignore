@@ -19,6 +19,7 @@ data/
 frontend/node_modules/
 frontend/dist/
 frontend/.vite/
+.wrangler/
 # Golden cases are committed ONLY when synthetic. This rule used to be
 # `evals/golden/*.json`, written when the golden set was expected to hold real
 # client matters — and it then swallowed the synthetic cases authored

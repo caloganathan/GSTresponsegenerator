@@ -12,6 +12,7 @@ Callers branch on that and nothing else.
 """
 
 import asyncio
+import contextvars
 from typing import Any, Dict, List, Optional, Sequence
 
 import httpx
@@ -41,6 +42,28 @@ TRUNCATION_REASONS = frozenset({"length", "max_tokens", "MAX_TOKENS"})
 # nothing until it is used — billing is per token generated, not per token
 # permitted — so the headroom is close to free.
 STARVED_RETRY_MULTIPLIER = 3
+
+# Per-request OpenRouter API key supplied by the user (BYOK), falling back to
+# the server's configured OPENROUTER_API_KEY.
+_request_api_key: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "request_openrouter_key", default=None
+)
+
+
+def set_request_api_key(key: Optional[str]):
+    """Bind a user-supplied OpenRouter API key to the current async context."""
+    cleaned = (key or "").strip() or None
+    return _request_api_key.set(cleaned)
+
+
+def reset_request_api_key(token) -> None:
+    """Restore the previous OpenRouter API key context."""
+    _request_api_key.reset(token)
+
+
+def effective_api_key() -> str:
+    """Return the active OpenRouter API key for the current request."""
+    return _request_api_key.get() or OPENROUTER_API_KEY
 
 
 def _failed(model: str, reason: str) -> Dict[str, Any]:
@@ -205,7 +228,7 @@ async def query_model(
     effort = REASONING_EFFORT if effort is None else effort
 
     credentials = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Authorization": f"Bearer {effective_api_key()}",
         "Content-Type": "application/json",
     }
     body = _compose_request(model, messages, effort, web_search, zdr,

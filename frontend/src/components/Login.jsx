@@ -3,6 +3,7 @@ import { api, setAuthToken } from '../api';
 
 export default function Login({ onSuccess, theme, onToggleTheme }) {
   const [mode, setMode] = useState('credentials');
+  const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [token, setToken] = useState('');
@@ -19,6 +20,35 @@ export default function Login({ onSuccess, theme, onToggleTheme }) {
       onSuccess();
     } catch (err) {
       setError(err.message || 'Sign in failed');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const submitRegister = async (e) => {
+    e.preventDefault();
+    setError('');
+    setBusy(true);
+    try {
+      const session = await api.register(name.trim(), email.trim(), password);
+      setAuthToken(session.token);
+      onSuccess();
+    } catch (err) {
+      setError(err.message || 'Could not create account');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const continueAsGuest = async () => {
+    setError('');
+    setBusy(true);
+    try {
+      const session = await api.guestLogin();
+      setAuthToken(session.token);
+      onSuccess();
+    } catch (err) {
+      setError(err.message || 'Could not start guest session');
     } finally {
       setBusy(false);
     }
@@ -55,7 +85,54 @@ export default function Login({ onSuccess, theme, onToggleTheme }) {
           </div>
         </div>
 
-        {mode === 'credentials' ? (
+        {mode === 'register' ? (
+          <form onSubmit={submitRegister}>
+            <div className="field">
+              <label htmlFor="reg-name">Full Name</label>
+              <input
+                id="reg-name"
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="CA / Practitioner Name"
+                autoFocus
+                required
+              />
+            </div>
+            <div className="field">
+              <label htmlFor="reg-email">Email</label>
+              <input
+                id="reg-email"
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                autoComplete="email"
+                required
+              />
+            </div>
+            <div className="field">
+              <label htmlFor="reg-password">Password (min 8 characters)</label>
+              <input
+                id="reg-password"
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                autoComplete="new-password"
+                minLength={8}
+                required
+              />
+            </div>
+            {error && <div className="alert alert-danger" style={{ marginBottom: 16 }}>{error}</div>}
+            <button
+              type="submit"
+              className="btn btn-primary"
+              style={{ width: '100%' }}
+              disabled={busy || !name.trim() || !email.trim() || password.length < 8}
+            >
+              {busy ? 'Creating account…' : 'Create Account'}
+            </button>
+          </form>
+        ) : mode === 'credentials' ? (
           <form onSubmit={submitCredentials}>
             <div className="field">
               <label htmlFor="email">Email</label>
@@ -116,21 +193,49 @@ export default function Login({ onSuccess, theme, onToggleTheme }) {
           </form>
         )}
 
-        <div className="login-note">
+        <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--border)' }}>
           <button
-            className="btn btn-ghost btn-sm"
-            style={{ padding: 0 }}
-            onClick={() => {
-              setMode(mode === 'credentials' ? 'token' : 'credentials');
-              setError('');
-            }}
+            type="button"
+            className="btn btn-secondary"
+            style={{ width: '100%' }}
+            disabled={busy}
+            onClick={continueAsGuest}
           >
-            {mode === 'credentials'
-              ? 'Use a shared access token instead'
-              : 'Sign in with email and password'}
+            Continue as Guest (No data saved)
           </button>
-          <div style={{ marginTop: 8 }}>
-            On first run the server prints a partner account to its console.
+          <div className="field-help" style={{ marginTop: 6, textAlign: 'center' }}>
+            Scan your notice, generate the reply, and download the Word report—nothing is saved on the server.
+          </div>
+        </div>
+
+        <div className="login-note">
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-start' }}>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              style={{ padding: 0 }}
+              onClick={() => {
+                setMode(mode === 'register' ? 'credentials' : 'register');
+                setError('');
+              }}
+            >
+              {mode === 'register'
+                ? 'Already have an account? Sign in'
+                : 'New here? Create an account'}
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              style={{ padding: 0 }}
+              onClick={() => {
+                setMode(mode === 'token' ? 'credentials' : 'token');
+                setError('');
+              }}
+            >
+              {mode === 'token'
+                ? 'Sign in with email and password'
+                : 'Use a shared access token instead'}
+            </button>
           </div>
         </div>
       </div>

@@ -56,7 +56,7 @@ class TestTextExtraction:
 
     def test_rejects_unsupported_type(self):
         with pytest.raises(ValueError, match="Unsupported file type"):
-            intake.extract_text("notice.jpg", b"x" * 500)
+            intake.extract_text("notice.exe", b"x" * 500)
 
     def test_rejects_oversized_file(self):
         oversized = b"x" * (intake.MAX_UPLOAD_BYTES + 1)
