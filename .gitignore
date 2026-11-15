@@ -9,13 +9,13 @@ wheels/
 # Virtual environments
 .venv
 
-# Keys and secrets
+# Local environment — holds the OpenRouter credential and the access token
 .env
 
-# Data files
+# Runtime state: conversations, matters, user accounts and sessions
 data/
 
-# Frontend
+# Frontend dependencies and build output
 frontend/node_modules/
 frontend/dist/
 frontend/.vite/

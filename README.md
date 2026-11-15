@@ -1,6 +1,6 @@
 # Compliance Panel — GST advisory, plus the general LLM Council
 
-![llmcouncil](header.jpg)
+![The GST Compliance Panel: four adversarial counsel around a chairman, above the five-stage pipeline](header.jpg)
 
 > **Built on [Andrej Karpathy's LLM Council](https://github.com/karpathy/llm-council).**
 > The multi-model deliberation approach — parallel responses, anonymised peer
@@ -577,10 +577,10 @@ that no invoice-level data ever reaches a model, and that briefing size is
 independent of row count), and deployment invariants (the root `app` export,
 and state paths that can never resolve outside the volume).
 
-## Tech Stack
+## What it is built with
 
-- **Backend:** FastAPI (Python 3.10+), async httpx, OpenRouter API
-- **Frontend:** React + Vite, react-markdown for rendering
+- **API:** Python 3.10+ on FastAPI; every model call goes to OpenRouter over async httpx
+- **UI:** React on Vite, with react-markdown rendering the deliberation and the replies
 - **Reconciliation:** openpyxl for xlsx, csv.Sniffer for delimiter detection — parsed in memory, never written to disk
 - **Storage:** JSON files, atomic writes — conversations in `DATA_DIR`, and
   matters, user accounts and sessions in `STATE_DIR`
@@ -603,10 +603,23 @@ November 2026 were released under the Apache License 2.0.
 no licence file — its author released it stating it was "provided here as is
 for other people's inspiration". Since no licence could be relied upon, the
 inherited implementation has been rewritten: the transport layer, the storage
-layer, the deliberation prompts and the request schema were each
-reimplemented. What remains in common is function signatures, dictionary keys,
-imports and framework idiom — the shape the libraries impose, not anyone's
-authorship.
+layer, every prompt, the general council's route handlers and the launch
+script were each reimplemented.
+
+What remains in common is of three kinds. The general council still uses the
+upstream **names** for its stages and their data — function names, the
+`stage1` / `stage2` / `stage3` keys, the "Response A" labels, the fields of a
+stored conversation. Those were that author's choices, not something a library
+imposed, and they are kept because the API, the tests and every stored
+conversation are written against them. Beside them is **library and tool
+idiom**: imports, the calls any user of FastAPI, httpx or fetch writes, and
+generated files (the Vite template, the uv manifests). The rest is blank
+lines and brackets. By `git blame` that came to 489 lines byte-identical to
+upstream on 15 November 2026 — 41, 169 and 279 respectively — and none of them
+is a prompt, a comment, a docstring or a sentence of prose.
+[docs/upstream-provenance.md](docs/upstream-provenance.md) has the method and
+the per-file figures. The licence above is granted over this project's own
+work; it claims nothing in what the upstream author wrote.
 
 **The credit stands regardless, and it is not conditional on the code.** The
 idea — several models answering, refereeing one another blind, and a chair

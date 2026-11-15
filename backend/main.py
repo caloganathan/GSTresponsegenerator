@@ -1,4 +1,10 @@
-"""FastAPI backend for LLM Council."""
+"""
+The HTTP surface: the compliance panel's routes, the practice and admin
+routes around them, and the heritage general-council routes.
+
+Everything under /api sits behind `require_auth`. /healthz does not, because
+a hosting platform has to be able to probe it without a credential.
+"""
 
 import asyncio
 import json
@@ -957,6 +963,27 @@ async def admin_settings(
     }
 
 
+# ---------------------------------------------------------------------------
+# The general council — heritage mode
+#
+# Every route below that names a conversation resolves it through
+# `_conversation_or_404`, so "no such conversation" is answered in one place
+# and in one wording.
+# ---------------------------------------------------------------------------
+
+
+def _conversation_or_404(conversation_id: str) -> Dict[str, Any]:
+    record = storage.get_conversation(conversation_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return record
+
+
+def _sse_frame(event: Dict[str, Any]) -> str:
+    """One event in Server-Sent Events framing."""
+    return f"data: {json.dumps(event)}\n\n"
+
+
 @router.get("/conversations", response_model=List[ConversationEntry])
 async def list_conversations():
     """The conversation index, newest first."""
@@ -971,11 +998,8 @@ async def create_conversation():
 
 @router.get("/conversations/{conversation_id}", response_model=ConversationRecord)
 async def get_conversation(conversation_id: str):
-    """Get a specific conversation with all its messages."""
-    conversation = storage.get_conversation(conversation_id)
-    if conversation is None:
-        raise HTTPException(status_code=404, detail="Conversation not found")
-    return conversation
+    """One conversation with its full message history."""
+    return _conversation_or_404(conversation_id)
 
 
 @router.delete("/conversations/{conversation_id}")
@@ -989,63 +1013,57 @@ async def delete_conversation(conversation_id: str):
 @router.post("/conversations/{conversation_id}/message")
 async def send_message(conversation_id: str, request: CouncilQuestion):
     """
-    Send a message and run the council process (non-streaming).
-    Returns the complete response with all stages.
-    """
-    conversation = storage.get_conversation(conversation_id)
-    if conversation is None:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+    Put a question to the council and wait for the whole exchange.
 
-    is_first_message = len(conversation["messages"]) == 0
-    prior_messages = conversation["messages"]
+    The reply carries all three stages and the metadata at once. The UI uses
+    the streaming route below; this one is for callers that want one response.
+    """
+    # History is everything said before this question, so it is read off the
+    # record before the question is appended to it.
+    prior_messages = _conversation_or_404(conversation_id)["messages"]
+    opens_conversation = not prior_messages
 
     storage.add_user_message(conversation_id, request.content)
+    if opens_conversation:
+        storage.update_conversation_title(
+            conversation_id, await generate_conversation_title(request.content)
+        )
 
-    if is_first_message:
-        title = await generate_conversation_title(request.content)
-        storage.update_conversation_title(conversation_id, title)
-
-    stage1_results, stage2_results, stage3_result, metadata = await run_full_council(
+    stage1, stage2, stage3, metadata = await run_full_council(
         request.content,
         prior_messages=prior_messages,
         mode=request.mode,
         web_search=request.web_search,
     )
+    storage.add_assistant_message(conversation_id, stage1, stage2, stage3, metadata)
 
-    storage.add_assistant_message(
-        conversation_id, stage1_results, stage2_results, stage3_result, metadata
-    )
-
-    return {
-        "stage1": stage1_results,
-        "stage2": stage2_results,
-        "stage3": stage3_result,
-        "metadata": metadata,
-    }
+    return {"stage1": stage1, "stage2": stage2, "stage3": stage3,
+            "metadata": metadata}
 
 
 @router.post("/conversations/{conversation_id}/message/stream")
 async def send_message_stream(conversation_id: str, request: CouncilQuestion):
     """
-    Send a message and stream the council process.
-    Returns Server-Sent Events as each stage completes.
+    Put a question to the council and stream each stage as it lands.
+
+    The body is Server-Sent Events: the stage events from `run_council_stream`,
+    then `title_complete` if this question opened the conversation, then
+    `complete`. A failure part-way is reported as an `error` event rather than
+    a broken connection, so the UI can mark the exchange instead of losing it.
     """
-    conversation = storage.get_conversation(conversation_id)
-    if conversation is None:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+    prior_messages = _conversation_or_404(conversation_id)["messages"]
+    opens_conversation = not prior_messages
 
-    is_first_message = len(conversation["messages"]) == 0
-    prior_messages = conversation["messages"]
-
-    async def event_generator():
+    async def council_events():
         try:
             storage.add_user_message(conversation_id, request.content)
 
-            title_task = None
-            if is_first_message:
-                title_task = asyncio.create_task(
-                    generate_conversation_title(request.content)
-                )
+            # Naming the conversation runs beside the deliberation, not ahead
+            # of it: the first stage should not wait on a sidebar label.
+            naming = (
+                asyncio.create_task(generate_conversation_title(request.content))
+                if opens_conversation else None
+            )
 
             final: Optional[Dict[str, Any]] = None
             async for event in run_council_stream(
@@ -1056,7 +1074,7 @@ async def send_message_stream(conversation_id: str, request: CouncilQuestion):
             ):
                 if event["type"] == "summary":
                     final = event
-                yield f"data: {json.dumps(event)}\n\n"
+                yield _sse_frame(event)
 
             if final is not None:
                 storage.add_assistant_message(
@@ -1067,24 +1085,21 @@ async def send_message_stream(conversation_id: str, request: CouncilQuestion):
                     final.get("metadata", {}),
                 )
 
-            if title_task:
-                title = await title_task
+            if naming is not None:
+                title = await naming
                 storage.update_conversation_title(conversation_id, title)
-                yield f"data: {json.dumps({'type': 'title_complete', 'data': {'title': title}})}\n\n"
+                yield _sse_frame({"type": "title_complete", "data": {"title": title}})
 
-            yield f"data: {json.dumps({'type': 'complete'})}\n\n"
+            yield _sse_frame({"type": "complete"})
 
         except Exception as e:
             print(f"Stream error in conversation {conversation_id}: {e}")
-            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+            yield _sse_frame({"type": "error", "message": str(e)})
 
     return StreamingResponse(
-        event_generator(),
+        council_events(),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-        }
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )
 
 

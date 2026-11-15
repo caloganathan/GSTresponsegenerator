@@ -222,6 +222,32 @@ class TestTheLicence:
         assert "Andrej Karpathy" in notice
         assert "permanent and unconditional" in notice
 
+    def test_what_is_shared_with_upstream_is_not_overstated(self):
+        """
+        Three documents once said the remainder in common with upstream was
+        only what "the libraries impose, not anyone's authorship". It was not:
+        `git blame` still found upstream prose, a prompt among it, and the
+        general council's function names and keys are the upstream author's
+        choices whatever is done to the lines around them. A licence grant
+        reaches only what the grantor owns, so the description has to be the
+        true one, and the same one, wherever it appears.
+        """
+        import re
+
+        record = (ROOT / "docs" / "upstream-provenance.md").read_text()
+        figure = re.search(
+            r"\*\*Byte-identical to upstream now\*\* \| \*\*(\d+)\*\*", record)
+        assert figure, "the provenance record no longer states its total"
+
+        for name in ("NOTICE", "README.md", "docs/upstream-licence-request.md"):
+            text = (ROOT / name).read_text()
+            assert "not anyone's authorship" not in text, name
+            assert "dictated by the libraries" not in text, name
+            assert "wholly owned" not in text, name
+            assert f"{figure.group(1)} " in text, \
+                f"{name} states a different count from the provenance record"
+            assert "upstream-provenance.md" in text, name
+
 
 class TestTheGoldenSetBoundary:
     """

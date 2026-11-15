@@ -185,12 +185,27 @@ def list_conversations() -> List[Dict[str, Any]]:
     return _scan_documents(config.DATA_DIR, summarise, "conversation")
 
 
-def _append_message(conversation_id: str, message: Dict[str, Any]) -> None:
-    conversation = get_conversation(conversation_id)
-    if conversation is None:
+def _amend_conversation(
+    conversation_id: str,
+    change: Callable[[Dict[str, Any]], None],
+) -> None:
+    """
+    Load a conversation, apply one change to it, and write it back.
+
+    Every edit to a stored conversation goes through here, so each is a whole
+    read-modify-write over the atomic writer and none can leave a half-applied
+    record behind.
+    """
+    record = get_conversation(conversation_id)
+    if record is None:
         raise ValueError(f"Conversation {conversation_id} not found")
-    conversation["messages"].append(message)
-    save_conversation(conversation)
+    change(record)
+    save_conversation(record)
+
+
+def _append_message(conversation_id: str, message: Dict[str, Any]) -> None:
+    _amend_conversation(conversation_id,
+                        lambda record: record["messages"].append(message))
 
 
 def add_user_message(conversation_id: str, content: str) -> None:
@@ -221,11 +236,8 @@ def add_assistant_message(
 
 
 def update_conversation_title(conversation_id: str, title: str) -> None:
-    conversation = get_conversation(conversation_id)
-    if conversation is None:
-        raise ValueError(f"Conversation {conversation_id} not found")
-    conversation["title"] = title
-    save_conversation(conversation)
+    _amend_conversation(conversation_id,
+                        lambda record: record.update(title=title))
 
 
 # ---------------------------------------------------------------------------

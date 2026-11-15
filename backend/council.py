@@ -1,4 +1,11 @@
-"""3-stage LLM Council orchestration."""
+"""
+The general council: every seat answers, the seats referee one another with
+authorship withheld, and a chair settles it.
+
+This is the heritage mode. The compliance panel in `panel.py` is a different
+deliberation — its counsel answer different questions, so nothing there is
+ranked — and shares only the transport underneath.
+"""
 
 import asyncio
 import re
@@ -16,6 +23,13 @@ RANKING_HEADERS = (
     "FINAL RANKING:",
     "RANKING:",
 )
+
+# A conversation title is a sidebar label, so it is held to one short line.
+# Anything longer is cut and closed with an ellipsis that counts toward the
+# limit.
+TITLE_FALLBACK = "New Conversation"
+TITLE_MAX_CHARS = 50
+TITLE_ELLIPSIS = "..."
 
 
 def build_history_messages(
@@ -78,19 +92,15 @@ async def stage1_collect_responses(
         COUNCIL_MODELS, messages, web_search=web_search
     )
 
-    stage1_results = []
-    failures = []
-    for model, response in responses.items():
-        if response.get("ok"):
-            stage1_results.append({
-                "model": model,
-                "response": response["content"],
-                "usage": response.get("usage"),
-            })
-        else:
-            failures.append({"model": model, "error": response.get("error", "unknown")})
-
-    return stage1_results, failures
+    answered = [
+        {"model": seat, "response": reply["content"], "usage": reply.get("usage")}
+        for seat, reply in responses.items() if reply.get("ok")
+    ]
+    failures = [
+        {"model": seat, "error": reply.get("error", "unknown")}
+        for seat, reply in responses.items() if not reply.get("ok")
+    ]
+    return answered, failures
 
 
 def _build_ranking_prompt(
@@ -163,7 +173,8 @@ async def stage2_collect_rankings(
     Returns:
         Tuple of (rankings list, label_to_model mapping, failures list)
     """
-    labels = [chr(65 + i) for i in range(len(stage1_results))]  # A, B, C, ...
+    # One capital letter per answer, in the order the answers came back.
+    labels = [chr(ord("A") + seat) for seat in range(len(stage1_results))]
 
     label_to_model = {
         f"Response {label}": result["model"]
@@ -195,24 +206,24 @@ async def stage2_collect_rankings(
     ]
     responses = await asyncio.gather(*tasks) if tasks else []
 
-    stage2_results = []
-    failures = []
+    reviews: List[Dict[str, Any]] = []
+    failures: List[Dict[str, str]] = []
     for (ranker, own_label, valid_labels, _), response in zip(ranker_prompts, responses):
-        if response.get("ok"):
-            full_text = response["content"]
-            parsed = parse_ranking_from_text(full_text, valid_labels)
-            stage2_results.append({
-                "model": ranker,
-                "ranking": full_text,
-                "parsed_ranking": parsed,
-                "own_label": own_label,
-                "parse_complete": len(parsed) == len(valid_labels),
-                "usage": response.get("usage"),
-            })
-        else:
+        if not response.get("ok"):
             failures.append({"model": ranker, "error": response.get("error", "unknown")})
+            continue
+        verdict = response["content"]
+        ordering = parse_ranking_from_text(verdict, valid_labels)
+        reviews.append({
+            "model": ranker,
+            "ranking": verdict,
+            "parsed_ranking": ordering,
+            "own_label": own_label,
+            "parse_complete": len(ordering) == len(valid_labels),
+            "usage": response.get("usage"),
+        })
 
-    return stage2_results, label_to_model, failures
+    return reviews, label_to_model, failures
 
 
 async def stage3_synthesize_final(
@@ -232,10 +243,10 @@ async def stage3_synthesize_final(
     """
     model_to_label = {v: k for k, v in (label_to_model or {}).items()}
 
-    stage1_text = "\n\n".join(
-        f"[{model_to_label.get(result['model'], 'unlabeled')}] "
-        f"Model: {result['model']}\nResponse: {result['response']}"
-        for result in stage1_results
+    answers_text = "\n\n".join(
+        f"[{model_to_label.get(answer['model'], 'unlabeled')}] "
+        f"Answer from {answer['model']}:\n{answer['response']}"
+        for answer in stage1_results
     )
 
     review_section = ""
@@ -289,7 +300,7 @@ THE QUESTION
 {user_query}
 
 WHAT THE COUNCIL ANSWERED
-{stage1_text}
+{answers_text}
 {review_section}
 Now write the answer the user should receive. How to weigh what you have:
 
@@ -316,23 +327,22 @@ in your reply.
 
 Your answer:"""
 
-    messages = list(history or []) + [{"role": "user", "content": chairman_prompt}]
+    ruling = await query_model(
+        CHAIRMAN_MODEL,
+        list(history or []) + [{"role": "user", "content": chairman_prompt}],
+    )
+    if ruling.get("ok"):
+        return {"model": CHAIRMAN_MODEL, "response": ruling["content"],
+                "usage": ruling.get("usage")}
 
-    response = await query_model(CHAIRMAN_MODEL, messages)
-
-    if not response.get("ok"):
-        return {
-            "model": CHAIRMAN_MODEL,
-            "response": f"Error: Unable to generate final synthesis "
-                        f"({response.get('error', 'unknown error')}). "
-                        f"Individual responses in Stage 1 are still available above.",
-            "error": True,
-        }
-
+    # The chair failing must not take the council's work with it: the answers
+    # and reviews already collected stay on screen beside this message.
     return {
         "model": CHAIRMAN_MODEL,
-        "response": response["content"],
-        "usage": response.get("usage"),
+        "response": f"Error: Unable to generate final synthesis "
+                    f"({ruling.get('error', 'unknown error')}). "
+                    f"Individual responses in Stage 1 are still available above.",
+        "error": True,
     }
 
 
@@ -407,17 +417,17 @@ def calculate_aggregate_rankings(
             positions[model].append(pos)
             scores[model].append((pos - 1) / (n - 1) if n > 1 else 0.5)
 
-    aggregate = []
-    for model, model_scores in scores.items():
-        aggregate.append({
+    standings = [
+        {
             "model": model,
             "score": round(sum(model_scores) / len(model_scores), 3),
             "average_rank": round(sum(positions[model]) / len(positions[model]), 2),
             "rankings_count": len(model_scores),
-        })
-
-    aggregate.sort(key=lambda x: x["score"])
-    return aggregate
+        }
+        for model, model_scores in scores.items()
+    ]
+    # sorted() is stable, as list.sort() was: tied seats keep first-seen order.
+    return sorted(standings, key=lambda seat: seat["score"])
 
 
 def _sum_usage(*usage_lists: List[Optional[Dict[str, Any]]]) -> Dict[str, Any]:
@@ -434,24 +444,28 @@ def _sum_usage(*usage_lists: List[Optional[Dict[str, Any]]]) -> Dict[str, Any]:
 
 
 async def generate_conversation_title(user_query: str) -> str:
-    """Generate a short title for a conversation from its first message."""
-    title_prompt = f"""Generate a very short title (3-5 words maximum) that summarizes the following question.
-The title should be concise and descriptive. Do not use quotes or punctuation in the title.
-
-Question: {user_query}
-
-Title:"""
-
-    messages = [{"role": "user", "content": title_prompt}]
-    response = await query_model(TITLE_MODEL, messages, timeout=30.0, effort="none")
-
+    """Name a conversation after its opening question, for the sidebar."""
+    naming_request = (
+        "Give this conversation a name for a sidebar list: three to five words "
+        "that say what the question below is about.\n"
+        "Reply with the name alone, on one line, with no quotation marks and no "
+        "closing punctuation.\n\n"
+        f"The question:\n{user_query}\n\n"
+        "The name:"
+    )
+    response = await query_model(
+        TITLE_MODEL,
+        [{"role": "user", "content": naming_request}],
+        timeout=30.0,
+        effort="none",
+    )
     if not response.get("ok"):
-        return "New Conversation"
+        return TITLE_FALLBACK
 
-    title = response.get("content", "New Conversation").strip().strip("\"'")
-    if len(title) > 50:
-        title = title[:47] + "..."
-    return title or "New Conversation"
+    title = response.get("content", TITLE_FALLBACK).strip().strip("\"'")
+    if len(title) > TITLE_MAX_CHARS:
+        title = title[:TITLE_MAX_CHARS - len(TITLE_ELLIPSIS)] + TITLE_ELLIPSIS
+    return title or TITLE_FALLBACK
 
 
 async def run_council_stream(
@@ -525,26 +539,24 @@ async def run_council_stream(
     )
     yield {"type": "stage3_complete", "data": stage3_result}
 
-    usage = _sum_usage(
-        [r.get("usage") for r in stage1_results],
-        [r.get("usage") for r in stage2_results],
-        [stage3_result.get("usage")],
-    )
-
-    metadata = {
-        "label_to_model": label_to_model,
-        "aggregate_rankings": aggregate_rankings,
-        "failures": {"stage1": stage1_failures, "stage2": stage2_failures},
-        "usage": usage,
-        "mode": mode,
-        "web_search": web_search,
-    }
-
+    # The summary is the authoritative record of the exchange: it is what gets
+    # persisted, so a reloaded conversation carries everything the live one did.
     yield {
         "type": "summary",
         "data": {"stage1": stage1_results, "stage2": stage2_results,
                  "stage3": stage3_result},
-        "metadata": metadata,
+        "metadata": {
+            "label_to_model": label_to_model,
+            "aggregate_rankings": aggregate_rankings,
+            "failures": {"stage1": stage1_failures, "stage2": stage2_failures},
+            "usage": _sum_usage(
+                [r.get("usage") for r in stage1_results],
+                [r.get("usage") for r in stage2_results],
+                [stage3_result.get("usage")],
+            ),
+            "mode": mode,
+            "web_search": web_search,
+        },
     }
 
 
