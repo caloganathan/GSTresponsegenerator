@@ -8,9 +8,9 @@ This document explains how the upstream [`caloganathan/GSTresponsegenerator`](ht
 
 ### Backend (`backend/`)
 - **`backend/main.py`** — FastAPI application serving:
-  - Authentication: `POST /api/auth/login`, `POST /api/auth/register` (public sign-up), and `POST /api/auth/guest` (ephemeral session with `is_guest=True`, no database/file persistence).
-  - Intake & OCR: `POST /api/panel/intake` accepts PDFs or images (`.png`, `.jpg`, `.jpeg`, `.webp`), extracts structured notice fields, renders page previews with bounding boxes, and generates targeted Indian GST Act clarifying questions.
-  - Adversarial Deliberation (SSE): `POST /api/panel/run-inline` (used by Guest & Quick Responder) and `POST /api/panel/matters/{id}/run` stream real-time events across 4 stages.
+  - Authentication: `POST /api/auth/login`, `POST /api/auth/register` (public sign-up — **off unless `ALLOW_SELF_REGISTRATION=true`**, because the account it creates is a staff member of the workspace and can read every stored matter), and `POST /api/auth/guest` (ephemeral session with `is_guest=True`, no database/file persistence). A guest session is admitted only to the stateless routes in `auth.GUEST_ROUTES` — the notice responder — and is refused on stored matters, the dashboard, conversations and settings. Guest sessions expire after 12 hours.
+  - Intake & OCR: `POST /api/panel/extract` accepts PDFs or images (`.png`, `.jpg`, `.jpeg`, `.webp`), extracts structured notice fields, renders page previews with bounding boxes, and generates targeted Indian GST Act clarifying questions.
+  - Adversarial Deliberation (SSE): `POST /api/panel/run` streams real-time events across the panel stages. For a guest it runs without creating a matter; for a firm account it creates and stores one.
   - Report Export: `POST /api/panel/export-inline` builds and streams a formatted Word (`.docx`) statutory reply pack in memory without saving anything to disk.
 - **`backend/ocr.py`** — Local RapidOCR (`rapidocr-onnxruntime`) + PyMuPDF (`fitz`):
   - `ocr_image()` processes direct image uploads.
@@ -54,7 +54,7 @@ This document explains how the upstream [`caloganathan/GSTresponsegenerator`](ht
    ```bash
    uv run python -m backend.main
    ```
-   *(Leave `OPENROUTER_API_KEY` unset in `.env` if you want public/guest users to supply their own key via the UI.)*
+   *(Leave `OPENROUTER_API_KEY` unset in `.env` if you want public/guest users to supply their own key via the UI. If it IS set, a guest who sends no key of their own runs on yours — anyone who can reach the site can spend your OpenRouter credit.)*
 3. **Install and build the frontend:**
    ```bash
    cd frontend

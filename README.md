@@ -423,6 +423,7 @@ the ones a deployment must actually decide:
 |---|---|---|
 | `OPENROUTER_API_KEY` | — | Required. Nothing runs without it. |
 | `APP_ACCESS_TOKEN` | *(unset = auth off)* | Shared secret for the login screen. **Never deploy publicly without this or a user account.** |
+| `ALLOW_SELF_REGISTRATION` | `false` | Lets the public create their own account. **Leave off wherever client matters are stored** — the account is a staff member of the workspace and can read all of them. Guest sessions need no setting and are confined to the stateless notice-responder routes. |
 | `STATE_DIR` | parent of `DATA_DIR` | Matters, user accounts and sessions. Must sit inside the mounted volume. |
 | `DATA_DIR` | `data/conversations` | Conversation storage path. |
 | `DEFAULT_PANEL_TIER` | `pro` | `draft` (anonymising) or `pro`. |

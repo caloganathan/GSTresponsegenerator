@@ -237,3 +237,143 @@ class TestFailClosed:
             users.authenticate("ghost@firm.in", "x", "10.0.0.1")
         # a different email from the same address is still allowed to try
         users.authenticate("other@firm.in", "x", "10.0.0.1")
+
+
+class TestGuestsReachNothingStored:
+    """
+    POST /api/auth/guest asks for no credential, so a guest is anyone on the
+    internet. The first cut of guest mode issued a token that passed
+    `require_auth` on every route, and matters are not scoped per user: an
+    anonymous caller could list every stored matter and read each in full —
+    client name and GSTIN included. Guests are now admitted to an allowlist
+    of stateless routes and refused everywhere else.
+    """
+
+    @pytest.fixture
+    def guest(self, client):
+        from backend import auth, storage
+        auth._GUEST_SESSIONS.clear()
+        storage.create_matter("m1", {"client_name": "Real Client Pvt Ltd",
+                                     "gstin": "33AAAAA0000A1Z5",
+                                     "notice_type": "DRC-01"}, "gst", "pro", None)
+        session = client.post("/api/auth/guest").json()
+        return {"Authorization": f"Bearer {session['token']}"}
+
+    @pytest.mark.parametrize("method,path", [
+        ("get", "/api/matters"),
+        ("get", "/api/matters/m1"),
+        ("get", "/api/matters/m1/export"),
+        ("get", "/api/matters/m1/computations"),
+        ("get", "/api/matters/calendar.ics"),
+        ("delete", "/api/matters/m1"),
+        ("get", "/api/dashboard"),
+        ("get", "/api/conversations"),
+        ("post", "/api/conversations"),
+        ("get", "/api/health"),
+        ("get", "/api/admin/users"),
+        ("get", "/api/admin/settings"),
+    ])
+    def test_stored_data_is_refused(self, client, guest, method, path):
+        response = getattr(client, method)(path, headers=guest)
+        assert response.status_code == 403, f"{method} {path}"
+        assert "Real Client" not in response.text
+        assert "33AAAAA0000A1Z5" not in response.text
+
+    def test_the_matter_survives_a_guest_delete_attempt(self, client, guest):
+        from backend import storage
+        client.delete("/api/matters/m1", headers=guest)
+        assert storage.get_matter("m1") is not None
+
+    @pytest.mark.parametrize("path", [
+        "/api/features", "/api/auth/check", "/api/panel/config"])
+    def test_the_stateless_routes_stay_open(self, client, guest, path):
+        assert client.get(path, headers=guest).status_code == 200
+
+    def test_every_api_route_is_closed_to_guests_unless_listed(self, client, guest):
+        """
+        The allowlist is the control, so it is asserted against the route
+        table itself: a route added tomorrow is refused to guests without
+        anyone remembering to protect it.
+        """
+        from backend import auth
+        from backend.main import app
+        unauthenticated = {"/api/auth/login", "/api/auth/guest",
+                           "/api/auth/register"}
+        checked = 0
+        for route in app.routes:
+            path = getattr(route, "path", "")
+            if not path.startswith("/api/") or path in unauthenticated:
+                continue
+            concrete = path.replace("{matter_id}", "m1") \
+                           .replace("{conversation_id}", "c1") \
+                           .replace("{user_id}", "u1")
+            for method in route.methods - {"HEAD", "OPTIONS"}:
+                if (method, path) in auth.GUEST_ROUTES:
+                    continue
+                response = client.request(method, concrete, headers=guest)
+                assert response.status_code == 403, f"{method} {path}"
+                checked += 1
+        assert checked >= 15, "the route table was not walked"
+
+    def test_the_allowlist_names_only_routes_that_exist(self):
+        from backend import auth
+        from backend.main import app
+        table = {(m, r.path) for r in app.routes
+                 for m in getattr(r, "methods", None) or ()}
+        assert auth.GUEST_ROUTES <= table
+
+    def test_a_guest_session_expires(self, client, guest, monkeypatch):
+        from datetime import timedelta
+        from backend import auth
+        later = auth._now() + timedelta(hours=auth.GUEST_SESSION_TTL_HOURS, minutes=1)
+        monkeypatch.setattr(auth, "_now", lambda: later)
+        assert client.get("/api/features", headers=guest).status_code == 401
+
+    def test_guest_sessions_are_capped(self, client, monkeypatch):
+        from backend import auth
+        auth._GUEST_SESSIONS.clear()
+        monkeypatch.setattr(auth, "GUEST_SESSION_CAP", 5)
+        for _ in range(20):
+            client.post("/api/auth/guest")
+        assert len(auth._GUEST_SESSIONS) <= 5
+
+    def test_the_expiry_is_not_sent_to_the_browser(self, client):
+        session = client.post("/api/auth/guest").json()
+        assert not any(k.startswith("_") for k in session["user"])
+        check = client.get("/api/auth/check", headers={
+            "Authorization": f"Bearer {session['token']}"}).json()
+        assert not any(k.startswith("_") for k in check["user"])
+
+    def test_a_firm_account_is_unaffected(self, client):
+        headers = {"Authorization": f"Bearer {TOKEN}"}
+        from backend import storage
+        storage.create_matter("m2", {"client_name": "Another Client"},
+                              "gst", "pro", None)
+        assert client.get("/api/matters", headers=headers).status_code == 200
+        assert client.get("/api/matters/m2", headers=headers).status_code == 200
+
+
+class TestSelfRegistrationIsOptIn:
+    """
+    A self-registered account is a `staff` member of this firm's workspace
+    and can read every stored matter. It must never be available by default.
+    """
+
+    BODY = {"email": "anyone@example.com", "password": "a-good-password",
+            "name": "Anyone"}
+
+    def test_registration_is_refused_by_default(self, client):
+        response = client.post("/api/auth/register", json=self.BODY)
+        assert response.status_code == 403
+        assert users.find_by_email("anyone@example.com") is None
+
+    def test_registration_works_when_the_deployment_opts_in(self, client, monkeypatch):
+        monkeypatch.setattr(config, "ALLOW_SELF_REGISTRATION", True)
+        response = client.post("/api/auth/register", json=self.BODY)
+        assert response.status_code == 200
+        assert response.json()["user"]["role"] == "staff"
+
+    def test_the_default_is_off(self):
+        import os
+        assert "ALLOW_SELF_REGISTRATION" not in os.environ
+        assert config.ALLOW_SELF_REGISTRATION is False
