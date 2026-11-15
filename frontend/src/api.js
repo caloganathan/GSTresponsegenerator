@@ -359,7 +359,7 @@ async function consumeSSE(response, onEvent) {
           const event = JSON.parse(line.slice(6));
           onEvent(event.type, event);
         } catch (e) {
-          console.error('Failed to parse SSE event:', e);
+          console.error('Dropped an SSE event that was not valid JSON:', e);
         }
       }
     }

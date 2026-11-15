@@ -55,13 +55,25 @@ than once, and not sooner than a month.
 the NOTICE file here to reflect it. That is also the moment — and only then
 — to mention what you built, briefly, if the conversation invites it.
 
-**The fallback has since been exercised, so this request is now a courtesy
-rather than a necessity.** The inherited implementation has been rewritten:
-the transport layer, the storage layer, the deliberation prompts and the
-request schema were each reimplemented. What remains in common is function
-signatures, dictionary keys, imports and framework idiom — the shape the
-libraries impose, not anyone's authorship. The project is wholly owned and
-licensed under the MIT License either way.
+**The fallback has since been exercised, which makes this request far less
+pressing — but it is still worth making.** The inherited implementation has
+been rewritten: the transport layer, the storage layer, every prompt, the
+general council's route handlers and the launch script were each
+reimplemented. No prompt, comment, docstring or sentence of documentation
+from upstream is left.
+
+What is left is the general council's vocabulary — the upstream function
+names, the `stage1` / `stage2` / `stage3` keys, the "Response A" labels, the
+fields of a stored conversation — together with imports, library calls, tool
+output and blank lines. The vocabulary was that author's choice rather than
+anything a library imposed, and it is kept because the API, the tests and
+every stored conversation are written against it. `git blame` put the whole
+remainder at 489 byte-identical lines on 15 November 2026; the breakdown is
+in [upstream-provenance.md](upstream-provenance.md).
+
+A licence from upstream would put that remainder beyond question, which is
+the reason to ask. The MIT License here is granted over this project's own
+work either way, and claims nothing in what the upstream author wrote.
 
 The acknowledgement in NOTICE is not conditional on any of that and stays
 permanently: the idea — several models answering, refereeing one another

@@ -1,6 +1,6 @@
-# CLAUDE.md - Technical Notes for LLM Council
+# CLAUDE.md — working notes for the Compliance Panel and the general council
 
-This file contains technical details, architectural decisions, and important implementation notes for future development sessions.
+What a future session needs before it changes anything here: why each part is built the way it is, and which of the invariants were learned the hard way.
 
 ## Compliance Panel (GST) — the primary product
 
@@ -339,7 +339,7 @@ LLM Council is a 3-stage deliberation system where multiple LLMs collaboratively
 - `COUNCIL_MODELS` (comma-separated env or default list), `CHAIRMAN_MODEL`, `TITLE_MODEL`
 - `REASONING_EFFORT` (low/medium/high/none), `REQUEST_TIMEOUT`, `MAX_RETRIES`, `HISTORY_MAX_TURNS`
 - `APP_ACCESS_TOKEN`: shared secret; empty = auth disabled (local dev only)
-- Backend runs on **port 8001** (NOT 8000 - user had another app on 8000)
+- The API listens on **port 8001** unless `PORT` says otherwise; the Vite dev proxy targets it and the Dockerfile exposes it
 
 **`openrouter.py`**
 - `query_model()`: single async model query. Returns `{'ok': True, 'content', 'reasoning_details', 'usage'}` or `{'ok': False, 'error'}` — never None
@@ -349,7 +349,7 @@ LLM Council is a 3-stage deliberation system where multiple LLMs collaboratively
 - `web_search=True` adds the OpenRouter web plugin (`plugins: [{"id": "web"}]`)
 - Treats 200-with-error-body and empty-content responses as failures
 
-**`council.py`** - The Core Logic
+**`council.py`** — the three-stage deliberation
 - `build_history_messages()`: converts stored conversation messages into chat history (user turns + prior Stage 3 answers), capped at `HISTORY_MAX_TURNS` exchanges. Passed to Stage 1 and Stage 3 as real message turns; Stage 2 gets a truncated text snippet via `format_history_snippet()`
 - `stage1_collect_responses()`: parallel queries; returns `(results, failures)` — failures carry per-model error strings surfaced in the UI
 - `stage2_collect_rankings()`:

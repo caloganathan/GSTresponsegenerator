@@ -18,7 +18,7 @@ def _env_list(name: str, default: list) -> list:
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
-# OpenRouter API key
+# The credential every model call is made with. Nothing runs without it.
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 # Council members - list of OpenRouter model identifiers.
@@ -30,7 +30,8 @@ COUNCIL_MODELS = _env_list("COUNCIL_MODELS", [
     "x-ai/grok-4.3",
 ])
 
-# Chairman model - synthesizes final response
+# The chair: reads the council's answers and reviews, and writes the one
+# reply the user receives.
 CHAIRMAN_MODEL = os.getenv("CHAIRMAN_MODEL", "google/gemini-3.1-pro-preview")
 
 # Cheap/fast model used only for conversation titles
