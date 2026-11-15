@@ -61,7 +61,7 @@ the transport layer, the storage layer, the deliberation prompts and the
 request schema were each reimplemented. What remains in common is function
 signatures, dictionary keys, imports and framework idiom — the shape the
 libraries impose, not anyone's authorship. The project is wholly owned and
-licensed under Apache 2.0 either way.
+licensed under the MIT License either way.
 
 The acknowledgement in NOTICE is not conditional on any of that and stays
 permanently: the idea — several models answering, refereeing one another

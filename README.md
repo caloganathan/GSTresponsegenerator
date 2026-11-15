@@ -590,10 +590,12 @@ and state paths that can never resolve outside the volume).
 The compliance layer — the panel, citation verification, anonymisation,
 notice intake, reconciliation, the reply pack and the domain packs — is the
 original work of CA Loganathan Anandan and is licensed under the
-**[Apache License 2.0](LICENSE)**. Use it, modify it, run it in your firm,
-build on it commercially. The conditions are the ordinary Apache ones: keep
-the copyright notice, keep the [NOTICE](NOTICE) file, and state what you
-changed.
+**[MIT License](LICENSE)**. Use it, modify it, run it in your firm, build on
+it commercially. The one condition is the ordinary MIT one: keep the copyright
+notice and the permission notice in every copy or substantial portion. Please
+also carry the [NOTICE](NOTICE) file forward — the licence no longer requires
+it, but the acknowledgement in it is owed. Versions published before
+November 2026 were released under the Apache License 2.0.
 
 **On the origin of this project.** It began from
 [karpathy/llm-council](https://github.com/karpathy/llm-council), which carries

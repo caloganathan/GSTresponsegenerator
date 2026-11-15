@@ -189,6 +189,40 @@ class TestDeploymentFiles:
             "pyproject declares readme = README.md; excluding it breaks the build"
 
 
+class TestTheLicence:
+    """
+    The licence is stated in four places — LICENSE, NOTICE, the README and
+    the upstream-request note — and a relicensing that reaches only the first
+    leaves the repository telling a reader two different things about what
+    they may do with it.
+    """
+
+    def test_the_licence_file_is_mit(self):
+        text = (ROOT / "LICENSE").read_text()
+        assert text.startswith("MIT License")
+        assert "Permission is hereby granted, free of charge" in text
+        assert "CA Loganathan Anandan" in text
+        assert "Apache" not in text
+
+    def test_no_document_still_grants_under_apache(self):
+        for name in ("NOTICE", "README.md", "docs/upstream-licence-request.md"):
+            text = (ROOT / name).read_text()
+            assert "licensed under the Apache" not in text, name
+            assert "Apache License 2.0 in the accompanying" not in text, name
+            assert "under Apache 2.0 either way" not in text, name
+
+    def test_the_readme_and_notice_name_the_mit_licence(self):
+        assert "[MIT License](LICENSE)" in (ROOT / "README.md").read_text()
+        assert "The MIT License in the accompanying LICENSE file" in \
+            (ROOT / "NOTICE").read_text()
+
+    def test_the_upstream_acknowledgement_survives_the_change(self):
+        """MIT does not make a NOTICE file travel. The credit stays anyway."""
+        notice = (ROOT / "NOTICE").read_text()
+        assert "Andrej Karpathy" in notice
+        assert "permanent and unconditional" in notice
+
+
 class TestTheGoldenSetBoundary:
     """
     Two failure directions, and both have happened.
