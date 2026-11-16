@@ -173,7 +173,7 @@ class TestVerifyAuthorities:
             return {"ok": True, "usage": None,
                     "content": '{"results": [{"index": 1, "status": "VERIFIED"}]}'}
 
-        monkeypatch.setattr(verification, "query_model", query)
+        monkeypatch.setattr(verification, "ask_model", query)
         determination = {
             "authorities": [{"citation": "Section 73 CGST Act", "proposition": "x"}],
         }
@@ -187,7 +187,7 @@ class TestVerifyAuthorities:
         async def failing_query(*args, **kwargs):
             return {"ok": False, "error": "network down"}
 
-        monkeypatch.setattr(verification, "query_model", failing_query)
+        monkeypatch.setattr(verification, "ask_model", failing_query)
 
         determination = {
             "authorities": [{"citation": "(2023) 45 GSTL 123", "proposition": "x"}],
@@ -210,7 +210,7 @@ class TestVerifyAuthorities:
                 "usage": {"total_tokens": 10, "cost": 0.01},
             }
 
-        monkeypatch.setattr(verification, "query_model", query)
+        monkeypatch.setattr(verification, "ask_model", query)
 
         determination = {
             "authorities": [
@@ -234,7 +234,7 @@ class TestVerifyAuthorities:
                 "usage": None,
             }
 
-        monkeypatch.setattr(verification, "query_model", query)
+        monkeypatch.setattr(verification, "ask_model", query)
 
         determination = {
             "authorities": [
@@ -254,7 +254,7 @@ class TestVerifyAuthorities:
                 "usage": None,
             }
 
-        monkeypatch.setattr(verification, "query_model", query)
+        monkeypatch.setattr(verification, "ask_model", query)
 
         determination = {
             "authorities": [{"citation": "Section 16 CGST Act", "proposition": "ITC"}],
@@ -267,7 +267,7 @@ class TestVerifyAuthorities:
         async def query(*args, **kwargs):
             return {"ok": True, "content": '{"results": []}', "usage": None}
 
-        monkeypatch.setattr(verification, "query_model", query)
+        monkeypatch.setattr(verification, "ask_model", query)
 
         determination = {
             "authorities": [{"citation": "Section 16 CGST Act", "proposition": "ITC"}],
@@ -309,7 +309,7 @@ class TestSupersededStatus:
                 "usage": None,
             }
 
-        monkeypatch.setattr(verification, "query_model", query)
+        monkeypatch.setattr(verification, "ask_model", query)
         determination = {
             "authorities": [{"citation": "Circular No. 183/15/2022-GST",
                              "proposition": "2A mismatch"}],
@@ -330,7 +330,7 @@ class TestSupersededStatus:
                     "content": '{"results": [{"index": 1, "status": "VERIFIED",'
                                ' "as_of": "July 2026"}]}'}
 
-        monkeypatch.setattr(verification, "query_model", query)
+        monkeypatch.setattr(verification, "ask_model", query)
         result, _ = await verification.verify_authorities(
             {"authorities": [{"citation": "Section 73", "proposition": "x"}],
              "draft_reply": ""}, gst, "m")
@@ -343,7 +343,7 @@ class TestSupersededStatus:
             return {"ok": True, "usage": None,
                     "content": '{"results": [{"index": 1, "status": "VERIFIED"}]}'}
 
-        monkeypatch.setattr(verification, "query_model", query)
+        monkeypatch.setattr(verification, "ask_model", query)
         result, _ = await verification.verify_authorities(
             {"authorities": [{"citation": "Section 73", "proposition": "x"}],
              "draft_reply": ""}, gst, "m")

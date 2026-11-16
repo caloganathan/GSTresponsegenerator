@@ -23,7 +23,7 @@ export default function GeneralCouncil({ onAuthError }) {
 
   const loadList = async () => {
     try {
-      setConversations(await api.listConversations());
+      setConversations(await api.conversationIndex());
     } catch (err) {
       if (!onAuthError(err)) setError(err.message);
     }
@@ -38,7 +38,7 @@ export default function GeneralCouncil({ onAuthError }) {
     if (!activeId) return;
     (async () => {
       try {
-        setConversation(await api.getConversation(activeId));
+        setConversation(await api.readConversation(activeId));
       } catch (err) {
         if (!onAuthError(err)) setError(err.message);
       }
@@ -51,7 +51,7 @@ export default function GeneralCouncil({ onAuthError }) {
 
   const startNew = async () => {
     try {
-      const created = await api.createConversation();
+      const created = await api.openConversation();
       setConversations((list) => [
         { id: created.id, created_at: created.created_at, title: created.title, message_count: 0 },
         ...list,
@@ -86,24 +86,24 @@ export default function GeneralCouncil({ onAuthError }) {
       messages: [
         ...prev.messages,
         { role: 'user', content },
-        { role: 'assistant', stage1: null, stage3: null, metadata: null, loading: {} },
+        { role: 'assistant', answers: null, ruling: null, metadata: null, loading: {} },
       ],
     }));
 
     try {
-      await api.sendMessageStream(activeId, content, { mode, webSearch }, (type, event) => {
+      await api.askCouncil(activeId, content, { mode, webSearch }, (type, event) => {
         switch (type) {
-          case 'stage1_start':
-            updateLast((m) => { m.loading = { ...m.loading, stage1: true }; });
+          case 'answers_start':
+            updateLast((m) => { m.loading = { ...m.loading, answers: true }; });
             break;
-          case 'stage1_complete':
-            updateLast((m) => { m.stage1 = event.data; m.loading = { ...m.loading, stage1: false }; });
+          case 'answers_complete':
+            updateLast((m) => { m.answers = event.data; m.loading = { ...m.loading, answers: false }; });
             break;
-          case 'stage3_start':
-            updateLast((m) => { m.loading = { ...m.loading, stage3: true }; });
+          case 'ruling_start':
+            updateLast((m) => { m.loading = { ...m.loading, ruling: true }; });
             break;
-          case 'stage3_complete':
-            updateLast((m) => { m.stage3 = event.data; m.loading = { ...m.loading, stage3: false }; });
+          case 'ruling_complete':
+            updateLast((m) => { m.ruling = event.data; m.loading = { ...m.loading, ruling: false }; });
             break;
           case 'summary':
             updateLast((m) => { m.metadata = event.metadata; });
@@ -188,11 +188,11 @@ export default function GeneralCouncil({ onAuthError }) {
                     ) : (
                       <>
                         <div className="section-title">Council</div>
-                        {msg.loading?.stage1 && <Loading label="Collecting opinions…" />}
-                        {msg.loading?.stage3 && <Loading label="Synthesising…" />}
-                        {msg.stage3 && (
+                        {msg.loading?.answers && <Loading label="Collecting opinions…" />}
+                        {msg.loading?.ruling && <Loading label="Synthesising…" />}
+                        {msg.ruling && (
                           <div className="markdown-content">
-                            <ReactMarkdown>{msg.stage3.response}</ReactMarkdown>
+                            <ReactMarkdown>{msg.ruling.text}</ReactMarkdown>
                           </div>
                         )}
                         {msg.metadata?.usage?.total_cost > 0 && (

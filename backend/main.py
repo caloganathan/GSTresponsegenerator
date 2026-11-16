@@ -26,9 +26,9 @@ from . import (auth as auth_module, calculators, config, deadlines, export,
                intake, ocr, openrouter, pricing, reconciliation, storage, users)
 from .auth import redact_for_role, require_auth, require_permission, resolve_user
 from .council import (
-    generate_conversation_title,
+    run_council,
     run_council_stream,
-    run_full_council,
+    title_for_conversation,
 )
 from .domains import available_domains, get_pack
 from .panel import run_panel_stream
@@ -79,7 +79,7 @@ MODEL_VALIDATION: Dict[str, Any] = {"checked": False}
 
 class CouncilQuestion(BaseModel):
     """A question put to the general council."""
-    content: str
+    question: str
     # "full" runs all three stages; "quick" skips peer review, which is
     # roughly half the cost and most of the speed.
     mode: str = "full"
@@ -973,7 +973,7 @@ async def admin_settings(
 
 
 def _conversation_or_404(conversation_id: str) -> Dict[str, Any]:
-    record = storage.get_conversation(conversation_id)
+    record = storage.read_conversation(conversation_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
     return record
@@ -985,19 +985,19 @@ def _sse_frame(event: Dict[str, Any]) -> str:
 
 
 @router.get("/conversations", response_model=List[ConversationEntry])
-async def list_conversations():
+async def conversation_index():
     """The conversation index, newest first."""
-    return storage.list_conversations()
+    return storage.conversation_index()
 
 
 @router.post("/conversations", response_model=ConversationRecord)
-async def create_conversation():
+async def open_conversation():
     """Open a new, empty conversation and return it."""
-    return storage.create_conversation(str(uuid.uuid4()))
+    return storage.open_conversation(str(uuid.uuid4()))
 
 
 @router.get("/conversations/{conversation_id}", response_model=ConversationRecord)
-async def get_conversation(conversation_id: str):
+async def read_conversation(conversation_id: str):
     """One conversation with its full message history."""
     return _conversation_or_404(conversation_id)
 
@@ -1011,43 +1011,44 @@ async def delete_conversation(conversation_id: str):
 
 
 @router.post("/conversations/{conversation_id}/message")
-async def send_message(conversation_id: str, request: CouncilQuestion):
+async def ask_council(conversation_id: str, request: CouncilQuestion):
     """
     Put a question to the council and wait for the whole exchange.
 
-    The reply carries all three stages and the metadata at once. The UI uses
-    the streaming route below; this one is for callers that want one response.
+    The reply carries the answers, the reviews, the ruling and the metadata
+    at once. The UI uses the streaming route below; this one is for callers
+    that want one response.
     """
     # History is everything said before this question, so it is read off the
     # record before the question is appended to it.
     prior_messages = _conversation_or_404(conversation_id)["messages"]
     opens_conversation = not prior_messages
 
-    storage.add_user_message(conversation_id, request.content)
+    storage.record_question(conversation_id, request.question)
     if opens_conversation:
-        storage.update_conversation_title(
-            conversation_id, await generate_conversation_title(request.content)
+        storage.retitle_conversation(
+            conversation_id, await title_for_conversation(request.question)
         )
 
-    stage1, stage2, stage3, metadata = await run_full_council(
-        request.content,
+    answers, reviews, ruling, metadata = await run_council(
+        request.question,
         prior_messages=prior_messages,
         mode=request.mode,
         web_search=request.web_search,
     )
-    storage.add_assistant_message(conversation_id, stage1, stage2, stage3, metadata)
+    storage.record_exchange(conversation_id, answers, reviews, ruling, metadata)
 
-    return {"stage1": stage1, "stage2": stage2, "stage3": stage3,
+    return {"answers": answers, "reviews": reviews, "ruling": ruling,
             "metadata": metadata}
 
 
 @router.post("/conversations/{conversation_id}/message/stream")
-async def send_message_stream(conversation_id: str, request: CouncilQuestion):
+async def ask_council_stream(conversation_id: str, request: CouncilQuestion):
     """
     Put a question to the council and stream each stage as it lands.
 
-    The body is Server-Sent Events: the stage events from `run_council_stream`,
-    then `title_complete` if this question opened the conversation, then
+    The body is Server-Sent Events: the events from `run_council_stream`,
+    then `conversation_titled` if this question opened the conversation, then
     `complete`. A failure part-way is reported as an `error` event rather than
     a broken connection, so the UI can mark the exchange instead of losing it.
     """
@@ -1056,18 +1057,18 @@ async def send_message_stream(conversation_id: str, request: CouncilQuestion):
 
     async def council_events():
         try:
-            storage.add_user_message(conversation_id, request.content)
+            storage.record_question(conversation_id, request.question)
 
             # Naming the conversation runs beside the deliberation, not ahead
             # of it: the first stage should not wait on a sidebar label.
             naming = (
-                asyncio.create_task(generate_conversation_title(request.content))
+                asyncio.create_task(title_for_conversation(request.question))
                 if opens_conversation else None
             )
 
             final: Optional[Dict[str, Any]] = None
             async for event in run_council_stream(
-                request.content,
+                request.question,
                 prior_messages=prior_messages,
                 mode=request.mode,
                 web_search=request.web_search,
@@ -1077,18 +1078,18 @@ async def send_message_stream(conversation_id: str, request: CouncilQuestion):
                 yield _sse_frame(event)
 
             if final is not None:
-                storage.add_assistant_message(
+                storage.record_exchange(
                     conversation_id,
-                    final["data"]["stage1"],
-                    final["data"]["stage2"],
-                    final["data"]["stage3"],
+                    final["data"]["answers"],
+                    final["data"]["reviews"],
+                    final["data"]["ruling"],
                     final.get("metadata", {}),
                 )
 
             if naming is not None:
                 title = await naming
-                storage.update_conversation_title(conversation_id, title)
-                yield _sse_frame({"type": "title_complete", "data": {"title": title}})
+                storage.retitle_conversation(conversation_id, title)
+                yield _sse_frame({"type": "conversation_titled", "data": {"title": title}})
 
             yield _sse_frame({"type": "complete"})
 

@@ -256,7 +256,7 @@ class TestPrivacy:
             return {"ok": True, "usage": None,
                     "content": '{"issues": "i", "facts": "f"}'}
 
-        monkeypatch.setattr(intake, "query_model", capture)
+        monkeypatch.setattr(intake, "ask_model", capture)
         await intake.extract_fields_assisted(NOTICE, gst, self.FREE)
 
         for secret in ("Acme Industries", "29AAAPL1234C1ZV", "AAAPL1234C",
@@ -273,7 +273,7 @@ class TestPrivacy:
             return {"ok": True, "usage": None,
                     "content": '{"issues": "i", "facts": "f"}'}
 
-        monkeypatch.setattr(intake, "query_model", capture)
+        monkeypatch.setattr(intake, "ask_model", capture)
         await intake.extract_fields_assisted(NOTICE, gst, self.PRO)
         assert "Acme Industries" in sent["prompt"]
         assert sent["zdr"] is True
@@ -293,7 +293,7 @@ class TestPrivacy:
                     '{"issues": "Excess ITC by the Taxpayer under ' +
                     gstin_token + '", "facts": "the Taxpayer filed late."}'}
 
-        monkeypatch.setattr(intake, "query_model", echo_placeholders)
+        monkeypatch.setattr(intake, "ask_model", echo_placeholders)
         fields, _, _ = await intake.extract_fields_assisted(
             NOTICE, gst, self.FREE)
 
@@ -307,7 +307,7 @@ class TestPrivacy:
         async def failing(*args, **kwargs):
             return {"ok": False, "error": "model unavailable"}
 
-        monkeypatch.setattr(intake, "query_model", failing)
+        monkeypatch.setattr(intake, "ask_model", failing)
         fields, _, warnings = await intake.extract_fields_assisted(
             NOTICE, gst, self.PRO
         )
@@ -319,7 +319,7 @@ class TestPrivacy:
             return {"ok": True, "usage": None,
                     "content": '{"issues": "i", "facts": "f", "confidence": "low"}'}
 
-        monkeypatch.setattr(intake, "query_model", query)
+        monkeypatch.setattr(intake, "ask_model", query)
         _, _, warnings = await intake.extract_fields_assisted(NOTICE, gst, self.PRO)
         assert any("difficult to read" in w for w in warnings)
 
@@ -395,7 +395,7 @@ class TestFreeTierNameScrubbing:
             sent["prompt"] = messages[0]["content"]
             return {"ok": True, "usage": None, "content": '{"issues": "i"}'}
 
-        monkeypatch.setattr(intake, "query_model", capture)
+        monkeypatch.setattr(intake, "ask_model", capture)
         await intake.extract_fields_assisted(
             NOTICE, gst, {"anonymise": True, "grounding": "m"}
         )

@@ -59,17 +59,19 @@ the NOTICE file here to reflect it. That is also the moment — and only then
 pressing — but it is still worth making.** The inherited implementation has
 been rewritten: the transport layer, the storage layer, every prompt, the
 general council's route handlers and the launch script were each
-reimplemented. No prompt, comment, docstring or sentence of documentation
-from upstream is left.
+reimplemented, and in November 2026 the general council's functions, stored
+keys, stream events and answer labels were renamed to this project's own
+vocabulary. No prompt, comment, docstring or sentence of documentation from
+upstream is left, and neither are the `stage1` / `stage2` / `stage3` names.
 
-What is left is the general council's vocabulary — the upstream function
-names, the `stage1` / `stage2` / `stage3` keys, the "Response A" labels, the
-fields of a stored conversation — together with imports, library calls, tool
-output and blank lines. The vocabulary was that author's choice rather than
-anything a library imposed, and it is kept because the API, the tests and
-every stored conversation are written against it. `git blame` put the whole
-remainder at 489 byte-identical lines on 15 November 2026; the breakdown is
-in [upstream-provenance.md](upstream-provenance.md).
+What is left is the idea itself, which is credited and not claimed; a few
+names — the configuration variables `COUNCIL_MODELS`, `CHAIRMAN_MODEL` and
+`DATA_DIR`, the `/api/conversations` routes, ordinary field names, and the
+`stage1_complete`-style events in the compliance panel's own stream —
+together with imports, library calls, tool output and blank lines.
+`git blame` put the whole remainder at 457 byte-identical lines on
+16 November 2026; the breakdown is in
+[upstream-provenance.md](upstream-provenance.md).
 
 A licence from upstream would put that remainder beyond question, which is
 the reason to ask. The MIT License here is granted over this project's own

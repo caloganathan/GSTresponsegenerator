@@ -228,7 +228,7 @@ perfectly good answer with the closing braces missing. That arrived
 indistinguishable from a model that could not do the job, and both went
 straight to `_fallback_determination`.
 
-`query_model` now returns `finish_reason`. On `length`, the chairman is retried
+`ask_model` now returns `finish_reason`. On `length`, the chairman is retried
 at double the ceiling; on any other parse failure it is asked once more for the
 object alone. Only then does it degrade — and the degraded message names
 `MAX_TOKENS_CHAIRMAN`, so the operator knows which knob to turn. Unanswered
@@ -326,13 +326,13 @@ anyway). No prompt change should ship without running these.
 
 ---
 
-## Project Overview
+## The general council
 
-LLM Council is a 3-stage deliberation system where multiple LLMs collaboratively answer user questions. The key innovation is anonymized peer review in Stage 2 — models never see model names, and never see or rank their own response (self-vote exclusion). The app supports multi-turn conversations, quick vs full deliberation modes, web-search grounding, cost accounting, and private cloud deployment behind a bearer token.
+The general council is a three-part deliberation: several models answer the same question, referee one another's answers blind, and a chair settles it. The idea is Andrej Karpathy's (see `NOTICE`). The referees never see model names, and never see or place their own answer. The app supports multi-turn conversations, quick vs full deliberation modes, web-search grounding, cost accounting, and private cloud deployment behind a bearer token.
 
 ## Architecture
 
-### Backend Structure (`backend/`)
+### Backend modules (`backend/`)
 
 **`config.py`**
 - Every setting is env-overridable (loaded via `.env`); see `.env.example` for the full list
@@ -342,7 +342,7 @@ LLM Council is a 3-stage deliberation system where multiple LLMs collaboratively
 - The API listens on **port 8001** unless `PORT` says otherwise; the Vite dev proxy targets it and the Dockerfile exposes it
 
 **`openrouter.py`**
-- `query_model()`: single async model query. Returns `{'ok': True, 'content', 'reasoning_details', 'usage'}` or `{'ok': False, 'error'}` — never None
+- `ask_model()`: single async model query. Returns `{'ok': True, 'content', 'reasoning_details', 'usage'}` or `{'ok': False, 'error'}` — never None
 - Retries transient failures (network errors, 408/409/429/5xx) with exponential backoff (2s, 4s); non-retryable statuses fail fast
 - If a model rejects the `reasoning` parameter with HTTP 400, the parameter is stripped and the call retried without consuming retry budget
 - Requests `usage: {include: true}` so OpenRouter returns token counts and dollar cost
@@ -350,37 +350,38 @@ LLM Council is a 3-stage deliberation system where multiple LLMs collaboratively
 - Treats 200-with-error-body and empty-content responses as failures
 
 **`council.py`** — the three-stage deliberation
-- `build_history_messages()`: converts stored conversation messages into chat history (user turns + prior Stage 3 answers), capped at `HISTORY_MAX_TURNS` exchanges. Passed to Stage 1 and Stage 3 as real message turns; Stage 2 gets a truncated text snippet via `format_history_snippet()`
-- `stage1_collect_responses()`: parallel queries; returns `(results, failures)` — failures carry per-model error strings surfaced in the UI
-- `stage2_collect_rankings()`:
-  - Global labels "Response A/B/C..." assigned by Stage 1 order; `label_to_model` mapping for de-anonymization
-  - **Each ranker gets a custom prompt excluding its own response** — different rankers see different subsets, so per-ranker `valid_labels` are tracked
-  - Rankers with fewer than 2 responses to rank are skipped
-  - Returns `(rankings, label_to_model, failures)`; each ranking includes `parsed_ranking`, `own_label`, `parse_complete`
-- `stage3_synthesize_final()`: chairman receives responses, reviews, **the label→model mapping, and the aggregate ranking** so it can connect peer verdicts to specific answers; prompt instructs it to resolve disagreements explicitly rather than averaging
-- `parse_ranking_from_text(text, valid_labels)`: extracts the LAST "FINAL RANKING:" section, prefers the numbered-list format, deduplicates labels (first occurrence wins), and drops labels not in `valid_labels`
-- `calculate_aggregate_rankings()`: positions are **normalized to [0,1] within each review** (rankers rank different subset sizes due to self-exclusion), then averaged; output sorted by `score` ascending (lower = better) and includes raw `average_rank` + `rankings_count`
-- `run_council_stream()`: async generator yielding stage events; single source of truth for orchestration. `run_full_council()` consumes it for the non-streaming endpoint. Modes: `"full"` (3 stages) and `"quick"` (skips Stage 2)
-- `_sum_usage()`: aggregates tokens/cost across all stages into `metadata.usage`
+- `build_history_messages()`: converts stored conversation messages into chat history (user turns + prior rulings), capped at `HISTORY_MAX_TURNS` exchanges. Passed to the opening and the ruling as real message turns; the referees get a truncated text snippet via `format_history_snippet()`
+- `collect_answers()`: parallel queries; returns `(answers, failures)` — failures carry per-model error strings surfaced in the UI
+- `collect_reviews()`:
+  - Labels "Answer A/B/C..." assigned in the order the answers came back; the `authors` mapping (label → model) de-anonymises them afterwards
+  - **Each referee gets its own prompt with its own answer left out** — different referees see different subsets, so per-referee `valid_labels` are tracked
+  - A referee left with fewer than 2 answers to order is skipped
+  - Returns `(reviews, authors, failures)`; each review carries `assessment`, `order`, `own_label`, `parse_complete`
+- `chair_ruling()`: the chair receives the answers, the reviews, **the `authors` mapping and the standings** so it can connect a verdict to the answer it was about; the prompt instructs it to resolve disagreements explicitly rather than averaging
+- `read_order_of_merit(reply, valid_labels)`: takes the LAST header in `RANKING_HEADERS` ("ORDER OF MERIT:" is what the prompt asks for), prefers the numbered-list format, deduplicates labels (first occurrence wins), and drops labels not in `valid_labels`
+- `tally_standings()`: positions are **normalized to [0,1] within each review** (referees order different subset sizes because each one's own answer is withheld), then averaged; output sorted by `score` ascending (lower = better) and includes raw `mean_position` + `reviews_counted`
+- `run_council_stream()`: async generator yielding the events; single source of truth for orchestration. `run_council()` consumes it for the non-streaming endpoint. Modes: `"full"` (answers → reviews → ruling) and `"quick"` (skips the reviews)
+- `_sum_usage()`: aggregates tokens/cost across answers, reviews and ruling into `metadata.usage`
 
 **`auth.py`**
 - `require_auth` dependency: constant-time comparison of `Authorization: Bearer <token>` against `APP_ACCESS_TOKEN`; no-op when unset
 
 **`storage.py`**
-- JSON-based conversation storage in `data/conversations/` (env-overridable `DATA_DIR` — read dynamically via `config.DATA_DIR` so tests can monkeypatch it)
+- Conversations are JSON files under `data/conversations/` (env-overridable `DATA_DIR` — read dynamically via `config.DATA_DIR` so tests can monkeypatch it)
 - **Atomic writes** (tempfile + `os.replace`) — a crash can't corrupt conversation files
 - Corrupt files are skipped in listings and return None on read, never crash the app
-- Assistant messages persist `{role, stage1, stage2, stage3, metadata}` — metadata (mapping, aggregates, failures, usage) IS persisted now, so reloaded conversations render fully
+- Assistant messages persist `{role, answers, reviews, ruling, metadata}` — metadata (`authors`, `standings`, failures, usage) IS persisted, so reloaded conversations render fully
+- **Conversations written before November 2026 are on disk in an older shape** (`stage1` / `stage2` / `stage3`, `label_to_model`, `aggregate_rankings`). `read_conversation()` upgrades them on the way in, so nothing above storage ever sees the old keys; `python -m backend.cli migrate-conversations --apply` rewrites the files. See "The general council's vocabulary" below
 - `delete_conversation()` supported
 
 **`main.py`**
 - All `/api` routes on an APIRouter behind `require_auth`; `/healthz` is unauthenticated (hosting platform health checks)
-- `POST /api/conversations/{id}/message/stream` (SSE) is the primary path; events: `stage1_start/complete`, `stage2_start/complete`, `stage3_start/complete`, `summary` (authoritative metadata incl. usage), `title_complete`, `complete`, `error`. `stage1_complete`/`stage2_complete` also carry `failures`
-- `SendMessageRequest`: `content`, `mode` ("full"/"quick"), `web_search` (bool)
+- `POST /api/conversations/{id}/message/stream` (SSE) is the primary path; events: `answers_start/complete`, `reviews_start/complete`, `ruling_start/complete`, `summary` (authoritative metadata incl. usage), `conversation_titled`, `complete`, `error`. `answers_complete`/`reviews_complete` also carry `failures`
+- `CouncilQuestion`: `question`, `mode` ("full"/"quick"), `web_search` (bool)
 - Startup hook validates configured model IDs against OpenRouter's catalog (best-effort, non-fatal); results in `GET /api/health`
 - Serves `frontend/dist` as static files when present (single-container deployment); mounted after API routes so `/api` wins
 
-### Frontend Structure (`frontend/src/`)
+### Frontend modules (`frontend/src/`)
 
 **`api.js`**
 - Relative URLs only (`/api/...`): Vite dev server proxies to :8001 (see `vite.config.js`); production is same-origin
@@ -404,30 +405,60 @@ consolidated into `GeneralCouncil.jsx` and styling moved to `theme.css` plus
 `components/components.css`. See the `### Frontend` section above, which is
 the accurate one.)
 
-## Key Design Decisions
+## Why the general council works the way it does
 
-### Self-Vote Exclusion (Stage 2)
-Models reliably recognize their own writing style, so letting them rank their own response biased the aggregate. Each ranker now sees only its peers' responses. Consequence: rankers rank different subset sizes (a stage-1 failure means that model still ranks ALL responses since none is its own), so aggregate scores use within-review normalization, not raw average positions.
+### No seat reviews its own answer
+Models reliably recognize their own writing style, so letting a seat place its own answer biased the standings. Each referee now sees only its peers' answers. Consequence: referees order different subset sizes (a seat that failed to answer still reviews ALL the answers, since none is its own), so the standings use within-review normalization, not raw average positions.
 
-### Stage 2 Prompt Format
-Strict "FINAL RANKING:" numbered-list format for parseability. The parser prefers the numbered format, falls back to bare "Response X" mentions, dedupes, and validates against the labels that ranker actually saw.
+### The referee's closing block
+The prompt asks for an "ORDER OF MERIT:" header followed by a strict numbered list, because that is what can be parsed. The parser prefers the numbered format, falls back to bare "Answer X" mentions, dedupes, and validates against the labels that referee was actually shown.
 
-### Chairman Context
-The chairman previously couldn't connect "Response A is best" to any model. It now receives the mapping and the computed consensus, with explicit instructions to exercise judgment (not blindly follow rank 1) and to resolve disagreements explicitly.
+### What the chair is given
+The chair previously couldn't connect "Answer A is best" to any model. It now receives the `authors` mapping and the standings, with explicit instructions to exercise judgment (not blindly follow first place) and to resolve disagreements explicitly.
 
-### Error Handling Philosophy
-- Continue with successful responses if some models fail (graceful degradation), but **surface every failure to the user** (per-model error notices in the UI)
-- Retry transient failures before giving up; never fail the whole request for one model
-- Chairman failure returns an explicit error message but Stage 1/2 results remain viewable
+### The general council's vocabulary
+
+The general council began as a fork, and for a long time it kept the upstream
+project's names: functions called `stage1_…`, `stage2_…`, `stage3_…`, records
+keyed `stage1` / `stage2` / `stage3`, labels reading "Response A". Those were
+that author's choices, not something a library imposed, and the project's
+licence notes had to say so. In November 2026 they were replaced with this
+project's own: the three parts of an exchange are its **answers**, its
+**reviews** and its **ruling**, and everything is named after those.
+
+Two consequences worth knowing before touching this code:
+
+1. **Old records are upgraded on read, in one place.**
+   `storage.upgrade_conversation` translates the old keys to the current ones
+   and is called from `read_conversation`, so the old names exist nowhere else
+   in the application. Do not add a second reader that opens the JSON
+   directly, and do not teach `council.py` or the UI the old keys — a record
+   that reaches them un-upgraded renders as a thread whose every answer is
+   missing, with no error.
+2. **Only keys are translated, never labels.** An old record's assessments
+   say "Response B" in the referee's own words, and its `authors` map is what
+   says who Response B was. Relabelling one without the other would cut the
+   stored reviews loose from the answers they were about, so a record keeps
+   the labels it was written with. `TestConversationsWrittenBeforeTheRename`
+   holds both.
+
+The compliance panel's own stream still uses `stage1_complete` and friends
+for its five stages. That is a separate wire protocol with its own clients
+and was deliberately left alone.
+
+### How failures are handled
+- A seat that fails does not stop the deliberation: the council carries on with the answers it has, and **every failure is shown to the user** (per-model error notices in the UI)
+- Transient failures are retried before a seat is counted as failed
+- A failed chair returns an explicit error message, and the answers and reviews remain viewable
 
 ### Cost Transparency
 Every model call requests usage accounting; totals are aggregated per exchange and persisted, so the user always knows what a deliberation cost.
 
-## Common Gotchas
+## General-council gotchas
 
-1. **Module Import Errors**: Always run backend as `python -m backend.main` from project root; backend modules use relative imports
-2. **Ranking Parse Failures**: `parse_complete: false` on a stage2 result means the ranker didn't rank everything it saw — the parser keeps whatever was valid
-3. **Different label sets per ranker**: don't assume every ranker ranked every label; that's why aggregate uses normalized scores
+1. **`ImportError` on start**: the backend is a package with relative imports, so start it from the repository root as `python -m backend.main` (or `uvicorn main:app`), never by running a file inside `backend/`
+2. **An incomplete order**: `parse_complete: false` on a review means the referee didn't place everything it was shown — the parser keeps whatever was valid
+3. **Different label sets per referee**: don't assume every referee placed every label; that's why the standings use normalized scores
 4. **Auth in dev**: unset `APP_ACCESS_TOKEN` disables auth entirely — never deploy that way
 5. **`config.DATA_DIR` is read at call time** in storage.py (via `config.DATA_DIR`), not import time — keep it that way for testability
 6. **SSE events can span TCP chunks** — the frontend buffers; don't regress to per-chunk parsing
@@ -438,8 +469,8 @@ Every model call requests usage accounting; totals are aggregated per exchange a
 uv run pytest
 ```
 
-`tests/test_council.py`: parser edge cases (duplicates, invalid labels, repeated headers, fallbacks), aggregate normalization, history building/truncation.
-`tests/test_storage.py`: atomic writes, corrupt-file resilience, metadata persistence, deletion.
+`tests/test_council.py`: parser edge cases (duplicates, invalid labels, repeated headers, fallbacks), standings normalization, history building/truncation.
+`tests/test_storage.py`: atomic writes, corrupt-file resilience, metadata persistence, deletion, and the upgrade of conversations stored in the old shape.
 
 Startup logs and `GET /api/health` report model IDs missing from OpenRouter's catalog — check there first when a model silently fails.
 
@@ -449,20 +480,20 @@ Startup logs and `GET /api/health` report model IDs missing from OpenRouter's ca
 - **Render**: `render.yaml` blueprint — Docker runtime, persistent disk at `/app/data`, `OPENROUTER_API_KEY` set manually, `APP_ACCESS_TOKEN` auto-generated
 - `/healthz` is the unauthenticated health check endpoint
 
-## Data Flow Summary
+## How a question flows
 
 ```
 User Query (+ conversation history, mode, web_search)
     ↓
-Stage 1: Parallel queries (history-aware, optional web search) → [responses + failures]
-    ↓ (mode=full and ≥2 responses)
-Stage 2: Anonymize, exclude self → parallel ranking queries → [evaluations + parsed rankings]
+Answers: parallel queries (history-aware, optional web search) → [answers + failures]
+    ↓ (mode=full and ≥2 answers)
+Reviews: label the answers, withhold each seat's own → parallel refereeing → [assessments + orders]
     ↓
-Aggregate (normalized positions) → [sorted by score]
+Standings (normalized positions) → [sorted by score]
     ↓
-Stage 3: Chairman synthesis (history + responses + reviews + mapping + consensus)
+Ruling: the chair (history + answers + reviews + authors + standings)
     ↓
-summary event: {stage1, stage2, stage3, metadata: {mapping, aggregates, failures, usage, mode}}
+summary event: {answers, reviews, ruling, metadata: {authors, standings, failures, usage, mode}}
     ↓
 Persisted to storage (metadata included) + streamed to frontend via SSE
 ```

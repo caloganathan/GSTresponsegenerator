@@ -343,15 +343,31 @@ upstream project this one grew out of, it still works, and no client
 engagement uses it — left visible it doubles the navigation a new user has to
 understand and invites the question "so is this a chatbot?".
 
-Instead of asking a question to a single LLM provider, group the frontier models into your "LLM Council". This web app looks like ChatGPT except it uses OpenRouter to send your query to multiple LLMs, asks them to review and rank each other's work (anonymized, and never their own), and finally a Chairman LLM produces the final response.
+The general council puts one question to several models at once and has
+them check each other before anything reaches you. It runs over OpenRouter, so
+the seats can be models from different providers, and a model you name as
+chair writes the single reply you read.
 
-What happens when you submit a query:
+A question goes through three parts:
 
-1. **Stage 1: First opinions**. The query — along with the conversation history — is given to all council LLMs individually, and the responses are collected and shown in a tab view. Optionally, models can ground their answers with live **web search**.
-2. **Stage 2: Peer review**. Each LLM is given the *other* models' responses, anonymized as "Response A/B/C" so it can't play favorites — and it never sees its own response, so it can't vote for itself. Each reviewer evaluates accuracy, depth, and usefulness, and produces a ranking. Rankings are aggregated with position normalization.
-3. **Stage 3: Final response**. The Chairman receives all responses, all reviews, the label→model mapping, and the peer-review consensus, and synthesizes the final answer.
+1. **Answers.** Every seat gets the question, with the conversation so far,
+   and answers on its own without seeing the others. A seat can be allowed to
+   ground its answer in a live **web search**.
+2. **Reviews.** Each seat then referees the others. The answers are relabelled
+   "Answer A", "Answer B" and so on, so a referee cannot tell whose is whose,
+   and a seat's own answer is withheld from it, so it cannot place itself
+   first. Each referee assesses the answers and puts them in order; the orders
+   are combined into standings, scaled so that referees who saw different
+   subsets count equally.
+3. **Ruling.** The chair is given every answer, every review, the key to who
+   wrote which labelled answer, and the standings, and writes the reply.
 
-A per-message **Quick mode** skips Stage 2 for faster, cheaper answers (individual responses + synthesis only). Every exchange reports its **token usage and dollar cost**.
+The screen shows the ruling. The answers and reviews behind it are stored with
+the conversation and returned by the API.
+
+**Quick mode**, chosen per question, goes straight from answers to ruling and
+costs roughly half as much. Every exchange reports the **tokens it used and
+what it cost**.
 
 ## Features
 
@@ -374,11 +390,11 @@ A per-message **Quick mode** skips Stage 2 for faster, cheaper answers (individu
 
 ### General Council (heritage mode, off by default)
 
-- Multi-turn conversations — the whole council sees the conversation history
-- Self-vote-free anonymized peer review with normalized aggregate rankings
+- Follow-up questions: every seat is given the conversation so far
+- Blind refereeing in which no seat reviews its own answer, combined into normalized standings
 - Reasoning effort control (`REASONING_EFFORT=low|medium|high|none`)
 - Optional web search grounding per message (OpenRouter web plugin)
-- Full vs Quick deliberation modes per message
+- Full or quick deliberation, chosen per question
 - Per-message cost and token accounting
 - Retries with exponential backoff; per-model failures are surfaced in the UI instead of silently dropped
 - Bearer-token auth for private cloud deployment; single-container packaging
@@ -393,13 +409,13 @@ uv sync
 cd frontend && npm install && cd ..
 ```
 
-Create a `.env` file in the project root (see `.env.example`):
+Copy `.env.example` to `.env` in the repository root and set, at minimum:
 
 ```bash
 OPENROUTER_API_KEY=sk-or-v1-...
 ```
 
-Get your API key at [openrouter.ai](https://openrouter.ai/) and make sure it has credits.
+The key comes from [openrouter.ai](https://openrouter.ai/). A key with no credit on it authenticates and then fails on the first model call.
 
 Run it:
 
@@ -604,19 +620,21 @@ no licence file — its author released it stating it was "provided here as is
 for other people's inspiration". Since no licence could be relied upon, the
 inherited implementation has been rewritten: the transport layer, the storage
 layer, every prompt, the general council's route handlers and the launch
-script were each reimplemented.
+script were each reimplemented. In November 2026 the general council's
+vocabulary followed — its functions, the keys an exchange is stored under, its
+stream events and its answer labels — so that an exchange is now its
+`answers`, its `reviews` and its `ruling` rather than three numbered stages.
 
-What remains in common is of three kinds. The general council still uses the
-upstream **names** for its stages and their data — function names, the
-`stage1` / `stage2` / `stage3` keys, the "Response A" labels, the fields of a
-stored conversation. Those were that author's choices, not something a library
-imposed, and they are kept because the API, the tests and every stored
-conversation are written against them. Beside them is **library and tool
-idiom**: imports, the calls any user of FastAPI, httpx or fetch writes, and
-generated files (the Vite template, the uv manifests). The rest is blank
-lines and brackets. By `git blame` that came to 489 lines byte-identical to
-upstream on 15 November 2026 — 41, 169 and 279 respectively — and none of them
-is a prompt, a comment, a docstring or a sentence of prose.
+What remains in common is the **idea** itself, which is credited below and not
+claimed; **a few names** — the configuration variables `COUNCIL_MODELS`,
+`CHAIRMAN_MODEL` and `DATA_DIR` that running deployments are set up with, the
+`/api/conversations` routes, ordinary field names such as `id` and `title`,
+and the `stage1_complete`-style event names in the compliance panel's own
+stream; **library and tool idiom** — imports, the calls any user of FastAPI,
+httpx or fetch writes, and generated files; and blank lines and brackets. By
+`git blame` that came to 457 lines byte-identical to upstream on
+16 November 2026 — 18, 169 and 270 for the last three — and none of them is a
+prompt, a comment, a docstring or a sentence of prose.
 [docs/upstream-provenance.md](docs/upstream-provenance.md) has the method and
 the per-file figures. The licence above is granted over this project's own
 work; it claims nothing in what the upstream author wrote.

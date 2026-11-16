@@ -26,7 +26,7 @@ without it, and says so, rather than blocking the matter.
 from typing import Any, Dict, Optional, Tuple
 
 from . import config
-from .openrouter import query_model
+from .openrouter import ask_model
 
 # Marker the briefing model returns when the settled position still holds.
 NO_CHANGE = "NO MATERIAL CHANGE"
@@ -108,7 +108,7 @@ async def build_briefing(
     if not model:
         return None, None
 
-    result = await query_model(
+    result = await ask_model(
         model,
         [{"role": "user", "content": build_briefing_prompt(matter, pack)}],
         effort=config.role_effort("briefing"),

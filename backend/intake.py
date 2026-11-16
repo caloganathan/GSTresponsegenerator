@@ -38,7 +38,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import config, defects, notice_tables, ocr, sanitizer
-from .openrouter import query_model
+from .openrouter import ask_model
 
 # One OCR job at a time: two concurrent scans would double peak memory on a
 # small instance. Reading runs off the event loop so other users are not frozen.
@@ -1034,7 +1034,7 @@ async def extract_fields_assisted(
     if not model:
         return {}, None, ["No model configured for reading notices."]
 
-    result = await query_model(
+    result = await ask_model(
         model,
         [{"role": "user", "content": _build_reading_prompt(outgoing, pack, notice_type)}],
         effort=config.role_effort("briefing"),

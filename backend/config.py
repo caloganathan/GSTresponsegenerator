@@ -21,7 +21,7 @@ def _env_list(name: str, default: list) -> list:
 # The credential every model call is made with. Nothing runs without it.
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
-# Council members - list of OpenRouter model identifiers.
+# The seats on the general council, as OpenRouter model identifiers.
 # Override with e.g. COUNCIL_MODELS="openai/gpt-5.5,x-ai/grok-4.3"
 COUNCIL_MODELS = _env_list("COUNCIL_MODELS", [
     "openai/gpt-5.5",

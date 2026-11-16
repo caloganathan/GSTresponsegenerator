@@ -19,13 +19,21 @@ to the same category of thing: something you need to run against a live
 deployment from a shell.
 
     python -m backend.cli check-models [--suggest]
+
+And one piece of housekeeping for the general council's stored conversations,
+which changed shape when the exchange stopped being stored under the names of
+its stages. The application reads the old shape without help; this rewrites
+the files so that nothing else has to.
+
+    python -m backend.cli migrate-conversations            # report only
+    python -m backend.cli migrate-conversations --apply    # rewrite them
 """
 
 import argparse
 import getpass
 import sys
 
-from . import config, models_doctor, users
+from . import config, models_doctor, storage, users
 
 
 def _read_password(explicit: str = "") -> str:
@@ -105,6 +113,29 @@ def cmd_check_models(args) -> int:
     return models_doctor.report(show_suggestions=args.suggest)
 
 
+def cmd_migrate_conversations(args) -> int:
+    """
+    Report on, or rewrite, conversations still stored in the old shape.
+
+    Reports by default. Rewriting stored records is the kind of thing that
+    should be looked at before it is done, so it has to be asked for.
+    """
+    print(f"Conversations at: {config.DATA_DIR}")
+    report = storage.migrate_conversations(dry_run=not args.apply)
+
+    verb = "Rewrote" if args.apply else "Would rewrite"
+    print(f"Examined {report['examined']} file(s): "
+          f"{report['current']} already current, "
+          f"{len(report['upgraded'])} in the old shape.")
+    for name in report["upgraded"]:
+        print(f"  {verb}: {name}")
+    for name in report["unreadable"]:
+        print(f"  Left alone (unreadable, or not a conversation): {name}")
+    if report["upgraded"] and not args.apply:
+        print("Nothing was written. Run again with --apply to rewrite them.")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m backend.cli",
@@ -150,12 +181,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     doctor.set_defaults(func=cmd_check_models)
 
+    migrate = subparsers.add_parser(
+        "migrate-conversations",
+        help="Rewrite general-council conversations stored in the old shape",
+    )
+    migrate.add_argument(
+        "--apply", action="store_true",
+        help="Rewrite the files. Without this the command only reports.",
+    )
+    migrate.set_defaults(func=cmd_migrate_conversations)
+
     return parser
 
 
 # Commands that do not touch the user store, and so must not print a banner
-# about it — `check-models` needs no volume and is routinely run from a laptop.
-_STORE_FREE_COMMANDS = {"check-models"}
+# about it — `check-models` needs no volume and is routinely run from a laptop,
+# and `migrate-conversations` works on DATA_DIR and names it itself.
+_STORE_FREE_COMMANDS = {"check-models", "migrate-conversations"}
 
 
 def main(argv=None) -> int:

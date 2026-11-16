@@ -121,3 +121,40 @@ class TestOperatesOnTheRealStore:
             })
         assert response.status_code == 200
         assert response.json()["user"]["role"] == "partner"
+
+
+class TestMigrateConversations:
+    """
+    The command rewrites stored records, so its default is to look and say
+    what it would do. An operator who runs it to find out what is there must
+    not find out by having it done.
+    """
+
+    OLD = ('{"id": "old", "created_at": "2026-03-01T10:00:00+00:00", '
+           '"title": "t", "messages": [{"role": "assistant", "stage1": [], '
+           '"stage2": [], "stage3": {"model": "m", "response": "r"}}]}')
+
+    @pytest.fixture
+    def conversations(self, tmp_path, monkeypatch):
+        directory = tmp_path / "conversations"
+        directory.mkdir()
+        monkeypatch.setattr(users.config, "DATA_DIR", str(directory))
+        (directory / "old.json").write_text(self.OLD)
+        return directory
+
+    def test_reports_without_writing_by_default(self, conversations, capsys):
+        assert cli.main(["migrate-conversations"]) == 0
+        out = capsys.readouterr().out
+        assert "Would rewrite: old" in out
+        assert "Nothing was written" in out
+        assert (conversations / "old.json").read_text() == self.OLD
+
+    def test_apply_rewrites(self, conversations, capsys):
+        assert cli.main(["migrate-conversations", "--apply"]) == 0
+        assert "Rewrote: old" in capsys.readouterr().out
+        rewritten = (conversations / "old.json").read_text()
+        assert '"stage3"' not in rewritten and '"ruling"' in rewritten
+
+    def test_does_not_announce_the_user_store(self, conversations, capsys):
+        cli.main(["migrate-conversations"])
+        assert "user store" not in capsys.readouterr().out

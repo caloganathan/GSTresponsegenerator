@@ -23,7 +23,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import config
-from .openrouter import query_model
+from .openrouter import ask_model
 
 VERIFIED = "VERIFIED"
 SUPERSEDED = "SUPERSEDED"
@@ -262,7 +262,7 @@ async def verify_authorities(
                     "that is itself a finding worth questioning.",
         }, []
 
-    result = await query_model(
+    result = await ask_model(
         verifier_model,
         [{"role": "user", "content": _build_check_prompt(authorities, pack)}],
         web_search=True,

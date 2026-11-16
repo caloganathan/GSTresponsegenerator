@@ -1,7 +1,7 @@
 """
 Transport to OpenRouter.
 
-One function matters here: `query_model`. Everything in this module exists to
+One function matters here: `ask_model`. Everything in this module exists to
 make that call return a *result* rather than raise, because a council is a
 fan-out of a dozen concurrent calls and a single upstream hiccup must degrade
 one seat, never the deliberation.
@@ -197,7 +197,7 @@ def _read_completion(model: str, response: httpx.Response) -> Dict[str, Any]:
     return outcome
 
 
-async def query_model(
+async def ask_model(
     model: str,
     messages: List[Dict[str, str]],
     timeout: Optional[float] = None,
@@ -293,7 +293,7 @@ async def query_model(
     return _failed(model, setback)
 
 
-async def query_models_parallel(
+async def ask_models(
     models: List[str],
     messages: List[Dict[str, str]],
     web_search: bool = False,
@@ -302,10 +302,10 @@ async def query_models_parallel(
     Put the same prompt to several models at once.
 
     Returns a mapping of model identifier to its individual result. Because
-    `query_model` never raises, a failing seat appears as a failed result
+    `ask_model` never raises, a failing seat appears as a failed result
     beside its successful peers rather than collapsing the gather.
     """
     seats = [
-        query_model(model, messages, web_search=web_search) for model in models
+        ask_model(model, messages, web_search=web_search) for model in models
     ]
     return dict(zip(models, await asyncio.gather(*seats)))
