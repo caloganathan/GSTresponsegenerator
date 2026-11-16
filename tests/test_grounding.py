@@ -97,7 +97,7 @@ class TestBuildBriefing:
                     "usage": {"total_tokens": 500, "cost": 0.01}}
 
         monkeypatch.setattr(config, "PANEL_WEB_GROUNDING", True)
-        monkeypatch.setattr(grounding, "query_model", fake_query)
+        monkeypatch.setattr(grounding, "ask_model", fake_query)
 
         briefing, usage = await grounding.build_briefing(self.MATTER, gst, self.TIER)
 
@@ -120,7 +120,7 @@ class TestBuildBriefing:
 
         monkeypatch.setattr(config, "PANEL_WEB_GROUNDING", True)
         monkeypatch.setattr(config, "ENFORCE_ZDR", True)
-        monkeypatch.setattr(grounding, "query_model", fake_query)
+        monkeypatch.setattr(grounding, "ask_model", fake_query)
 
         await grounding.build_briefing(
             self.MATTER, gst, {"grounding": "some/model", "anonymise": False})
@@ -137,7 +137,7 @@ class TestBuildBriefing:
 
         monkeypatch.setattr(config, "PANEL_WEB_GROUNDING", True)
         monkeypatch.setattr(config, "ENFORCE_ZDR", True)
-        monkeypatch.setattr(grounding, "query_model", fake_query)
+        monkeypatch.setattr(grounding, "ask_model", fake_query)
 
         await grounding.build_briefing(
             self.MATTER, gst, {"grounding": "some/model", "anonymise": True})
@@ -148,7 +148,7 @@ class TestBuildBriefing:
             return {"ok": True, "content": NO_CHANGE, "usage": None}
 
         monkeypatch.setattr(config, "PANEL_WEB_GROUNDING", True)
-        monkeypatch.setattr(grounding, "query_model", fake_query)
+        monkeypatch.setattr(grounding, "ask_model", fake_query)
 
         briefing, _ = await grounding.build_briefing(self.MATTER, gst, self.TIER)
         assert briefing["available"] is True
@@ -159,7 +159,7 @@ class TestBuildBriefing:
             return {"ok": False, "error": "search unavailable"}
 
         monkeypatch.setattr(config, "PANEL_WEB_GROUNDING", True)
-        monkeypatch.setattr(grounding, "query_model", failing)
+        monkeypatch.setattr(grounding, "ask_model", failing)
 
         briefing, usage = await grounding.build_briefing(self.MATTER, gst, self.TIER)
         assert briefing["available"] is False
@@ -173,7 +173,7 @@ class TestBuildBriefing:
             return {"ok": True, "content": "x", "usage": None}
 
         monkeypatch.setattr(config, "PANEL_WEB_GROUNDING", True)
-        monkeypatch.setattr(grounding, "query_model", fake_query)
+        monkeypatch.setattr(grounding, "ask_model", fake_query)
 
         await grounding.build_briefing(
             self.MATTER, gst, {"verifier": "fallback/model"}

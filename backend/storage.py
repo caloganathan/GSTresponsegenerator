@@ -139,40 +139,118 @@ def _scan_documents(
 # can redirect storage with a monkeypatch. Keep it that way.
 
 
-def ensure_data_dir() -> None:
+def ensure_conversation_dir() -> None:
     Path(config.DATA_DIR).mkdir(parents=True, exist_ok=True)
 
 
-def get_conversation_path(conversation_id: str) -> str:
+def conversation_file(conversation_id: str) -> str:
     if not _valid_id(conversation_id):
         raise ValueError(f"Invalid conversation id: {conversation_id!r}")
     return os.path.join(config.DATA_DIR, f"{conversation_id}.json")
 
 
-def save_conversation(conversation: Dict[str, Any]) -> None:
+# An exchange used to be stored under the names of the stages that produced
+# it. It is now stored under what each part IS — the answers, the reviews of
+# them, the ruling — and conversations written before the change are still on
+# disk in the old shape. These tables are the whole of the difference: old key
+# on the left, current key on the right, per level of the record.
+#
+# Only KEYS are translated. The labels a referee was shown ("Response A" in an
+# old record, "Answer A" in a new one) are values, they appear inside the
+# stored assessments as the referee wrote them, and the label-to-author map
+# beside them is what gives them meaning. Rewriting one without the other
+# would break the link, so a record keeps the labels it was written with.
+_LEGACY_EXCHANGE_KEYS = {"stage1": "answers", "stage2": "reviews", "stage3": "ruling"}
+_LEGACY_TEXT_KEY = {"response": "text"}
+_LEGACY_REVIEW_KEYS = {"ranking": "assessment", "parsed_ranking": "order"}
+_LEGACY_METADATA_KEYS = {"label_to_model": "authors",
+                         "aggregate_rankings": "standings"}
+_LEGACY_STANDING_KEYS = {"average_rank": "mean_position",
+                         "rankings_count": "reviews_counted"}
+_LEGACY_FAILURE_KEYS = {"stage1": "answers", "stage2": "reviews"}
+
+
+def _rekey(record: Any, renames: Dict[str, str]) -> bool:
+    """
+    Move old keys to their current names, in place. True if anything moved.
+
+    A record that already carries the current key keeps it: the old one is
+    dropped rather than allowed to overwrite newer data.
+    """
+    if not isinstance(record, dict):
+        return False
+    moved = False
+    for old, current in renames.items():
+        if old in record:
+            value = record.pop(old)
+            record.setdefault(current, value)
+            moved = True
+    return moved
+
+
+def upgrade_conversation(conversation: Dict[str, Any]) -> bool:
+    """
+    Bring a stored conversation up to the current shape, in place.
+
+    Returns True if anything changed. Running it on a current record changes
+    nothing, so it is safe on every read.
+    """
+    changed = False
+    for message in conversation.get("messages") or []:
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        changed |= _rekey(message, _LEGACY_EXCHANGE_KEYS)
+        for answer in message.get("answers") or []:
+            changed |= _rekey(answer, _LEGACY_TEXT_KEY)
+        for review in message.get("reviews") or []:
+            changed |= _rekey(review, _LEGACY_REVIEW_KEYS)
+        changed |= _rekey(message.get("ruling"), _LEGACY_TEXT_KEY)
+
+        metadata = message.get("metadata")
+        changed |= _rekey(metadata, _LEGACY_METADATA_KEYS)
+        if isinstance(metadata, dict):
+            for standing in metadata.get("standings") or []:
+                changed |= _rekey(standing, _LEGACY_STANDING_KEYS)
+            changed |= _rekey(metadata.get("failures"), _LEGACY_FAILURE_KEYS)
+    return changed
+
+
+def write_conversation(conversation: Dict[str, Any]) -> None:
     _write_document(config.DATA_DIR, conversation["id"], conversation)
 
 
-def get_conversation(conversation_id: str) -> Optional[Dict[str, Any]]:
-    return _read_document(config.DATA_DIR, conversation_id, "conversation")
+def read_conversation(conversation_id: str) -> Optional[Dict[str, Any]]:
+    """
+    One conversation, always in the current shape.
+
+    A record written in the old shape is upgraded as it is read, so nothing
+    above this function ever sees the old keys. The file itself is rewritten
+    the next time the conversation is added to; `migrate_conversations` does
+    them all at once.
+    """
+    conversation = _read_document(config.DATA_DIR, conversation_id, "conversation")
+    if conversation is not None:
+        upgrade_conversation(conversation)
+    return conversation
 
 
 def delete_conversation(conversation_id: str) -> bool:
     return _remove_document(config.DATA_DIR, conversation_id)
 
 
-def create_conversation(conversation_id: str) -> Dict[str, Any]:
+def open_conversation(conversation_id: str) -> Dict[str, Any]:
+    """Create an empty conversation, store it and return it."""
     conversation = {
         "id": conversation_id,
         "created_at": _now(),
         "title": DEFAULT_TITLE,
         "messages": [],
     }
-    save_conversation(conversation)
+    write_conversation(conversation)
     return conversation
 
 
-def list_conversations() -> List[Dict[str, Any]]:
+def conversation_index() -> List[Dict[str, Any]]:
     """Conversation summaries for the sidebar, newest first."""
     def summarise(document: Dict[str, Any]) -> Dict[str, Any]:
         return {
@@ -196,11 +274,11 @@ def _amend_conversation(
     read-modify-write over the atomic writer and none can leave a half-applied
     record behind.
     """
-    record = get_conversation(conversation_id)
+    record = read_conversation(conversation_id)
     if record is None:
         raise ValueError(f"Conversation {conversation_id} not found")
     change(record)
-    save_conversation(record)
+    write_conversation(record)
 
 
 def _append_message(conversation_id: str, message: Dict[str, Any]) -> None:
@@ -208,36 +286,74 @@ def _append_message(conversation_id: str, message: Dict[str, Any]) -> None:
                         lambda record: record["messages"].append(message))
 
 
-def add_user_message(conversation_id: str, content: str) -> None:
-    _append_message(conversation_id, {"role": "user", "content": content})
+def record_question(conversation_id: str, question: str) -> None:
+    """Append what the user asked. Stored in chat-message form, as it is sent."""
+    _append_message(conversation_id, {"role": "user", "content": question})
 
 
-def add_assistant_message(
+def record_exchange(
     conversation_id: str,
-    stage1: List[Dict[str, Any]],
-    stage2: List[Dict[str, Any]],
-    stage3: Dict[str, Any],
+    answers: List[Dict[str, Any]],
+    reviews: List[Dict[str, Any]],
+    ruling: Dict[str, Any],
     metadata: Optional[Dict[str, Any]] = None,
 ) -> None:
     """
-    Record one full exchange.
+    Append what the council made of the question.
 
-    The metadata — label mapping, aggregate ordering, per-model failures and
-    cost — is persisted alongside the stages, so a reloaded conversation
-    renders exactly as it did live rather than losing its provenance.
+    The metadata — who wrote which labelled answer, the standings, per-model
+    failures and cost — is persisted alongside the answers, reviews and
+    ruling, so a reloaded conversation renders exactly as it did live rather
+    than losing its provenance.
     """
     _append_message(conversation_id, {
         "role": "assistant",
-        "stage1": stage1,
-        "stage2": stage2,
-        "stage3": stage3,
+        "answers": answers,
+        "reviews": reviews,
+        "ruling": ruling,
         "metadata": metadata or {},
     })
 
 
-def update_conversation_title(conversation_id: str, title: str) -> None:
+def retitle_conversation(conversation_id: str, title: str) -> None:
     _amend_conversation(conversation_id,
                         lambda record: record.update(title=title))
+
+
+def migrate_conversations(dry_run: bool = False) -> Dict[str, Any]:
+    """
+    Rewrite every stored conversation that is still in the old shape.
+
+    The application does not need this — `read_conversation` upgrades on the
+    way in — but anything else that opens the JSON directly does, and until a
+    file is rewritten it is still in the shape only this module can read.
+    Returns what was found; with `dry_run` nothing is written.
+
+    Each rewrite is the same atomic replace as any other write, so an
+    interrupted run leaves every file either wholly old or wholly current,
+    and running it again finishes the job.
+    """
+    report: Dict[str, Any] = {"examined": 0, "upgraded": [], "current": 0,
+                              "unreadable": [], "dry_run": dry_run}
+    Path(config.DATA_DIR).mkdir(parents=True, exist_ok=True)
+    for filename in sorted(os.listdir(config.DATA_DIR)):
+        if not filename.endswith(".json") or filename.startswith("."):
+            continue
+        name = filename[:-len(".json")]
+        report["examined"] += 1
+        conversation = _read_document(config.DATA_DIR, name, "conversation")
+        # A file whose id does not match its name is not one this module
+        # wrote; leave it exactly as it is rather than write it somewhere new.
+        if not isinstance(conversation, dict) or conversation.get("id") != name:
+            report["unreadable"].append(name)
+            continue
+        if not upgrade_conversation(conversation):
+            report["current"] += 1
+            continue
+        if not dry_run:
+            write_conversation(conversation)
+        report["upgraded"].append(name)
+    return report
 
 
 # ---------------------------------------------------------------------------

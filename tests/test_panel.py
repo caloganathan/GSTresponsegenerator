@@ -364,7 +364,7 @@ class TestTheAnonymisationGate:
             return {"ok": True, "content": "analysis", "usage": None,
                     "model": model}
 
-        monkeypatch.setattr(panel, "query_model", fake_query)
+        monkeypatch.setattr(panel, "ask_model", fake_query)
 
         events = []
         async for event in panel.run_panel_stream(
@@ -392,7 +392,7 @@ class TestTheAnonymisationGate:
             called.append(1)
             return {"ok": True, "content": ""}
 
-        monkeypatch.setattr(panel, "query_model", fake_query)
+        monkeypatch.setattr(panel, "ask_model", fake_query)
 
         events = []
         async for event in panel.run_panel_stream(
@@ -415,7 +415,7 @@ class TestTheAnonymisationGate:
         async def fake_query(*args, **kwargs):
             raise AssertionError("no request may leave after the gate fails")
 
-        monkeypatch.setattr(panel, "query_model", fake_query)
+        monkeypatch.setattr(panel, "ask_model", fake_query)
 
         matter = self._matter()
         matter["gstin"] = ""
@@ -484,7 +484,7 @@ class TestFiledTextBlockers:
                             "not_found": 1, "total": 1},
             }, []
 
-        monkeypatch.setattr(panel, "query_model", fake_query)
+        monkeypatch.setattr(panel, "ask_model", fake_query)
         monkeypatch.setattr(panel, "verify_authorities", fake_verify)
 
         summary = None
@@ -607,7 +607,7 @@ class TestTheChairmanIsGivenASecondAttempt:
         async def fake_verify(determination, pack, verifier, **kwargs):
             return {"checked": True, "authorities": [], "summary": {}}, []
 
-        monkeypatch.setattr(panel, "query_model", fake_query)
+        monkeypatch.setattr(panel, "ask_model", fake_query)
         monkeypatch.setattr(panel, "verify_authorities", fake_verify)
 
         summary = None

@@ -29,18 +29,25 @@ stating it was "provided here as is for other people's inspiration". Because
 no licence could be relied upon, the implementation here has since been
 rewritten: the transport layer, the storage layer, every prompt, the route
 handlers of the general council and the launch script were each reimplemented
-in this project's own words.
+in this project's own words. In November 2026 the general council's
+vocabulary followed: its functions, the keys an exchange is stored under, its
+stream events and its answer labels were renamed, so that an exchange is now
+its answers, its reviews and its ruling rather than three numbered stages.
 
-What remains in common with the original is of three kinds, and they are not
+What remains in common with the original is of four kinds, and they are not
 alike:
 
-    Names and shape. The general council still uses the upstream names for
-    its stages and the data they pass — function names such as
-    stage3_synthesize_final and calculate_aggregate_rankings, the keys
-    stage1, stage2, stage3 and label_to_model, the "Response A" labels, and
-    the fields of a stored conversation. These were the upstream author's
-    choices; no library imposed them. They are kept because the API, the
-    tests and every stored conversation are written against them.
+    The idea and its shape. Several models answer, referee one another
+    blind, and a chair settles it. That is the upstream author's, it is
+    credited above, and nothing here claims it.
+
+    A few names. The configuration variables COUNCIL_MODELS, CHAIRMAN_MODEL
+    and DATA_DIR, which running deployments are configured with; the
+    /api/conversations routes; ordinary field names such as id, title and
+    messages; and, in the compliance panel's own event stream, names of the
+    form stage1_complete. Conversations stored before the renaming are still
+    read, so the old keys also survive in one translation table in
+    backend/storage.py.
 
     Library and tool idiom. Import statements, the calls any user of
     FastAPI, httpx or fetch writes, and files a tool generated — the Vite
@@ -48,9 +55,9 @@ alike:
 
     Blank lines, brackets, docstring delimiters and bare section headings.
 
-Measured by `git blame` on 15 November 2026, 489 lines of the tracked text
-files, lock files apart, are still byte-identical to upstream: 279 of the
-third kind, 169 of the second and 41 of the first. None of them is a prompt,
+Measured by `git blame` on 16 November 2026, 457 lines of the tracked text
+files, lock files apart, are still byte-identical to upstream: 270 of the
+fourth kind, 169 of the third and 18 of the second. None of them is a prompt,
 a comment, a docstring or a sentence of documentation. The method and the
 per-file figures are in docs/upstream-provenance.md, so the count can be run
 again rather than taken on trust.

@@ -227,10 +227,12 @@ class TestTheLicence:
         Three documents once said the remainder in common with upstream was
         only what "the libraries impose, not anyone's authorship". It was not:
         `git blame` still found upstream prose, a prompt among it, and the
-        general council's function names and keys are the upstream author's
-        choices whatever is done to the lines around them. A licence grant
-        reaches only what the grantor owns, so the description has to be the
-        true one, and the same one, wherever it appears.
+        general council's function names and keys were the upstream author's
+        choices whatever was done to the lines around them. The prose has
+        since been rewritten and the names replaced, but the rule that came
+        out of it stays: a licence grant reaches only what the grantor owns,
+        so the description has to be the true one, and the same one, wherever
+        it appears.
         """
         import re
 

@@ -13,7 +13,7 @@ from collections import defaultdict
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
 from .config import CHAIRMAN_MODEL, COUNCIL_MODELS, HISTORY_MAX_TURNS, TITLE_MODEL
-from .openrouter import query_model, query_models_parallel
+from .openrouter import ask_model, ask_models
 
 # Headers that mark the start of a referee's closing ordered list. The first is
 # what the prompt asks for; the rest are formats models fall into unprompted and
@@ -40,7 +40,7 @@ def build_history_messages(
     Convert stored conversation messages into chat messages usable as context.
 
     User messages pass through; assistant messages are represented by their
-    final (Stage 3) answer. Only the most recent `max_turns` exchanges are kept
+    ruling — the answer the chair gave. Only the most recent `max_turns` exchanges are kept
     to bound token usage.
     """
     history: List[Dict[str, str]] = []
@@ -48,7 +48,7 @@ def build_history_messages(
         if msg.get("role") == "user" and msg.get("content"):
             history.append({"role": "user", "content": msg["content"]})
         elif msg.get("role") == "assistant":
-            final = (msg.get("stage3") or {}).get("response")
+            final = (msg.get("ruling") or {}).get("text")
             if final:
                 history.append({"role": "assistant", "content": final})
     # Keep the last N user/assistant pairs
@@ -74,26 +74,25 @@ def format_history_snippet(
     return "\n\n".join(lines)
 
 
-async def stage1_collect_responses(
-    user_query: str,
+async def collect_answers(
+    question: str,
     history: Optional[List[Dict[str, str]]] = None,
     web_search: bool = False,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, str]]]:
     """
-    Stage 1: put the question to every seat on the council at once.
+    Opening: put the question to every seat on the council at once.
 
-    Returns:
-        Tuple of (successful results, failures). Each result has
-        'model', 'response', 'usage'; each failure has 'model', 'error'.
+    Returns the answers that came back and the seats that failed. An answer
+    carries 'model', 'text' and 'usage'; a failure carries 'model' and 'error'.
     """
-    messages = list(history or []) + [{"role": "user", "content": user_query}]
+    messages = list(history or []) + [{"role": "user", "content": question}]
 
-    responses = await query_models_parallel(
+    responses = await ask_models(
         COUNCIL_MODELS, messages, web_search=web_search
     )
 
     answered = [
-        {"model": seat, "response": reply["content"], "usage": reply.get("usage")}
+        {"model": seat, "text": reply["content"], "usage": reply.get("usage")}
         for seat, reply in responses.items() if reply.get("ok")
     ]
     failures = [
@@ -103,20 +102,20 @@ async def stage1_collect_responses(
     return answered, failures
 
 
-def _build_ranking_prompt(
-    user_query: str,
-    labeled_responses: List[Tuple[str, str]],
+def _referee_prompt(
+    question: str,
+    labelled_answers: List[Tuple[str, str]],
     history_snippet: str,
 ) -> str:
-    responses_text = "\n\n".join(
-        f"Response {label}:\n{text}" for label, text in labeled_responses
+    answers_block = "\n\n".join(
+        f"Answer {label}:\n{text}" for label, text in labelled_answers
     )
     context_block = (
         f"For context, here is the recent conversation that led to this "
         f"question:\n\n{history_snippet}\n\n"
         if history_snippet else ""
     )
-    labels_list = ", ".join(f"Response {label}" for label, _ in labeled_responses)
+    labels_list = ", ".join(f"Answer {label}" for label, _ in labelled_answers)
 
     return f"""Act as an impartial referee. Several answers to one question are
 set out below. Their authors are withheld from you deliberately, and one of the
@@ -124,11 +123,11 @@ answers may be missing because it was your own — judge only what you are shown
 
 {context_block}The question put to the council:
 
-{user_query}
+{question}
 
 The answers under review:
 
-{responses_text}
+{answers_block}
 
 Work through this in two parts.
 
@@ -148,8 +147,8 @@ has a defect, rank it first and say so in Part One rather than demoting it.
 Close your reply with the ordering on its own lines, in exactly this shape:
 
 ORDER OF MERIT:
-1. Response B
-2. Response A
+1. Answer B
+2. Answer A
 
 Rules for that closing block: the header on its own line in capitals, one label
 per numbered line and nothing else on the line, every label you were shown
@@ -159,28 +158,28 @@ available to you are: {labels_list}.
 Begin with Part One."""
 
 
-async def stage2_collect_rankings(
-    user_query: str,
-    stage1_results: List[Dict[str, Any]],
+async def collect_reviews(
+    question: str,
+    answers: List[Dict[str, Any]],
     history: Optional[List[Dict[str, str]]] = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, str], List[Dict[str, str]]]:
     """
-    Stage 2: every seat referees the others, with authorship withheld.
+    Review: every seat referees the others, with authorship withheld.
 
-    A model never sees or ranks its own response, which removes
-    self-preference bias from the aggregate.
+    A seat is never shown its own answer, so it cannot place itself first —
+    which is what removes self-preference from the standings.
 
-    Returns:
-        Tuple of (rankings list, label_to_model mapping, failures list)
+    Returns the reviews, the label-to-author mapping, and the seats that
+    failed to review.
     """
     # One capital letter per answer, in the order the answers came back.
-    labels = [chr(ord("A") + seat) for seat in range(len(stage1_results))]
+    labels = [chr(ord("A") + seat) for seat in range(len(answers))]
 
-    label_to_model = {
-        f"Response {label}": result["model"]
-        for label, result in zip(labels, stage1_results)
+    authors = {
+        f"Answer {label}": result["model"]
+        for label, result in zip(labels, answers)
     }
-    model_to_label = {v: k for k, v in label_to_model.items()}
+    label_of = {v: k for k, v in authors.items()}
 
     history_snippet = format_history_snippet(history or [])
 
@@ -188,20 +187,20 @@ async def stage2_collect_rankings(
     # Tuples: (ranker model, its own label if any, labels it will see, prompt)
     ranker_prompts: List[Tuple[str, Optional[str], List[str], str]] = []
     for ranker in COUNCIL_MODELS:
-        own_label = model_to_label.get(ranker)
+        own_label = label_of.get(ranker)
         shown = [
-            (label, result["response"])
-            for label, result in zip(labels, stage1_results)
-            if f"Response {label}" != own_label
+            (label, result["text"])
+            for label, result in zip(labels, answers)
+            if f"Answer {label}" != own_label
         ]
         if len(shown) < 2:
-            continue  # nothing meaningful to rank
-        valid_labels = [f"Response {label}" for label, _ in shown]
-        prompt = _build_ranking_prompt(user_query, shown, history_snippet)
+            continue  # one answer cannot be put in order
+        valid_labels = [f"Answer {label}" for label, _ in shown]
+        prompt = _referee_prompt(question, shown, history_snippet)
         ranker_prompts.append((ranker, own_label, valid_labels, prompt))
 
     tasks = [
-        query_model(ranker, [{"role": "user", "content": prompt}])
+        ask_model(ranker, [{"role": "user", "content": prompt}])
         for ranker, _, _, prompt in ranker_prompts
     ]
     responses = await asyncio.gather(*tasks) if tasks else []
@@ -213,62 +212,62 @@ async def stage2_collect_rankings(
             failures.append({"model": ranker, "error": response.get("error", "unknown")})
             continue
         verdict = response["content"]
-        ordering = parse_ranking_from_text(verdict, valid_labels)
+        ordering = read_order_of_merit(verdict, valid_labels)
         reviews.append({
             "model": ranker,
-            "ranking": verdict,
-            "parsed_ranking": ordering,
+            "assessment": verdict,
+            "order": ordering,
             "own_label": own_label,
             "parse_complete": len(ordering) == len(valid_labels),
             "usage": response.get("usage"),
         })
 
-    return reviews, label_to_model, failures
+    return reviews, authors, failures
 
 
-async def stage3_synthesize_final(
-    user_query: str,
-    stage1_results: List[Dict[str, Any]],
-    stage2_results: List[Dict[str, Any]],
-    label_to_model: Optional[Dict[str, str]] = None,
-    aggregate_rankings: Optional[List[Dict[str, Any]]] = None,
+async def chair_ruling(
+    question: str,
+    answers: List[Dict[str, Any]],
+    reviews: List[Dict[str, Any]],
+    authors: Optional[Dict[str, str]] = None,
+    standings: Optional[List[Dict[str, Any]]] = None,
     history: Optional[List[Dict[str, str]]] = None,
 ) -> Dict[str, Any]:
     """
-    Stage 3: the chair settles the council and writes the answer.
+    Ruling: the chair settles the council and writes the answer.
 
-    The chairman receives the individual responses, the peer evaluations, the
-    label→model mapping (so it can connect verdicts to answers), and the
-    computed aggregate ranking.
+    The chair is given the answers, the referees' assessments, which label
+    belonged to which seat (so a verdict on "Answer B" can be tied to the
+    answer it was about), and the standings worked out from the reviews.
     """
-    model_to_label = {v: k for k, v in (label_to_model or {}).items()}
+    label_of = {v: k for k, v in (authors or {}).items()}
 
     answers_text = "\n\n".join(
-        f"[{model_to_label.get(answer['model'], 'unlabeled')}] "
-        f"Answer from {answer['model']}:\n{answer['response']}"
-        for answer in stage1_results
+        f"[{label_of.get(answer['model'], 'unlabeled')}] "
+        f"Answer from {answer['model']}:\n{answer['text']}"
+        for answer in answers
     )
 
     review_section = ""
-    if stage2_results:
+    if reviews:
         mapping_text = "\n".join(
-            f"- {label} = {model}" for label, model in (label_to_model or {}).items()
+            f"- {label} = {model}" for label, model in (authors or {}).items()
         )
-        stage2_text = "\n\n".join(
-            f"Reviewer: {result['model']}\nEvaluation:\n{result['ranking']}"
-            for result in stage2_results
+        reviews_text = "\n\n".join(
+            f"Reviewer: {result['model']}\nEvaluation:\n{result['assessment']}"
+            for result in reviews
         )
         aggregate_text = "\n".join(
             f"{i + 1}. {agg['model']} (normalized score {agg['score']}, "
-            f"{agg['rankings_count']} peer reviews)"
-            for i, agg in enumerate(aggregate_rankings or [])
-        ) or "No aggregate ranking could be computed."
+            f"{agg['reviews_counted']} peer reviews)"
+            for i, agg in enumerate(standings or [])
+        ) or "No standings could be worked out from the reviews."
 
         review_section = f"""
 WHAT THE REFEREES SAID
 Each referee saw the others' answers without authorship, and never its own:
 
-{stage2_text}
+{reviews_text}
 
 Which label belonged to which model:
 {mapping_text}
@@ -288,7 +287,7 @@ The question below continues this exchange:
 
     reviewed_clause = (
         " They then reviewed one another's work without knowing who wrote what."
-        if stage2_results else ""
+        if reviews else ""
     )
 
     chairman_prompt = f"""You are chairing a council. Several models were asked
@@ -297,7 +296,7 @@ below. Yours is to settle it.
 {context_block}
 THE QUESTION
 
-{user_query}
+{question}
 
 WHAT THE COUNCIL ANSWERED
 {answers_text}
@@ -327,27 +326,28 @@ in your reply.
 
 Your answer:"""
 
-    ruling = await query_model(
+    ruling = await ask_model(
         CHAIRMAN_MODEL,
         list(history or []) + [{"role": "user", "content": chairman_prompt}],
     )
     if ruling.get("ok"):
-        return {"model": CHAIRMAN_MODEL, "response": ruling["content"],
+        return {"model": CHAIRMAN_MODEL, "text": ruling["content"],
                 "usage": ruling.get("usage")}
 
     # The chair failing must not take the council's work with it: the answers
     # and reviews already collected stay on screen beside this message.
     return {
         "model": CHAIRMAN_MODEL,
-        "response": f"Error: Unable to generate final synthesis "
-                    f"({ruling.get('error', 'unknown error')}). "
-                    f"Individual responses in Stage 1 are still available above.",
+        "text": f"The chair could not write a ruling "
+                f"({ruling.get('error', 'unknown error')}). "
+                f"The council's individual answers were collected and are kept "
+                f"with this conversation.",
         "error": True,
     }
 
 
-def parse_ranking_from_text(
-    ranking_text: str,
+def read_order_of_merit(
+    reply: str,
     valid_labels: Optional[List[str]] = None,
 ) -> List[str]:
     """
@@ -355,27 +355,27 @@ def parse_ranking_from_text(
 
     Deduplicates labels (first occurrence wins) and, when valid_labels is
     given, drops any label that wasn't actually in the ranked set — so stray
-    "Response X" mentions in prose can't corrupt the ranking.
+    "Answer X" mentions in prose can't corrupt the order.
     """
-    section = ranking_text
+    section = reply
     # Take the LAST header present: models restate the header in prose more
     # often than they emit two genuine blocks, and the real one closes the
     # reply. RANKING_HEADERS carries the legacy wording because a model that
     # has seen enough of the internet will sometimes answer in it regardless
     # of what it was asked for.
     cut = max(
-        (ranking_text.rfind(header) + len(header) for header in RANKING_HEADERS
-         if header in ranking_text),
+        (reply.rfind(header) + len(header) for header in RANKING_HEADERS
+         if header in reply),
         default=-1,
     )
     if cut >= 0:
-        section = ranking_text[cut:]
+        section = reply[cut:]
 
     # Prefer the strict numbered-list format
-    matches = re.findall(r"\d+\.\s*(Response [A-Z])", section)
+    matches = re.findall(r"\d+\.\s*(Answer [A-Z])", section)
     if not matches:
-        # Fallback: any "Response X" mentions in order
-        matches = re.findall(r"Response [A-Z]", section)
+        # Failing that, every "Answer X" mentioned, in the order mentioned
+        matches = re.findall(r"Answer [A-Z]", section)
 
     valid = set(valid_labels) if valid_labels is not None else None
     seen = set()
@@ -390,28 +390,28 @@ def parse_ranking_from_text(
     return ordered
 
 
-def calculate_aggregate_rankings(
-    stage2_results: List[Dict[str, Any]],
-    label_to_model: Dict[str, str],
+def tally_standings(
+    reviews: List[Dict[str, Any]],
+    authors: Dict[str, str],
 ) -> List[Dict[str, Any]]:
     """
-    Calculate aggregate rankings across all peer reviews.
+    Turn the referees' separate orderings into one set of standings.
 
-    Because each reviewer ranks a different subset (its own response is
-    excluded), raw positions aren't directly comparable. Positions are
-    normalized to [0, 1] within each review (0 = ranked best, 1 = ranked
-    worst) and averaged.
+    Each referee orders a different subset, because its own answer is
+    withheld from it, so raw positions cannot be compared across reviews.
+    Each position is therefore scaled to [0, 1] within its own review
+    (0 placed first, 1 placed last) and the scaled positions are averaged.
     """
     scores = defaultdict(list)
     positions = defaultdict(list)
 
-    for entry in stage2_results:
-        parsed = entry.get("parsed_ranking") or []
+    for entry in reviews:
+        parsed = entry.get("order") or []
         n = len(parsed)
         if n == 0:
             continue
         for pos, label in enumerate(parsed, start=1):
-            model = label_to_model.get(label)
+            model = authors.get(label)
             if model is None:
                 continue
             positions[model].append(pos)
@@ -421,8 +421,8 @@ def calculate_aggregate_rankings(
         {
             "model": model,
             "score": round(sum(model_scores) / len(model_scores), 3),
-            "average_rank": round(sum(positions[model]) / len(positions[model]), 2),
-            "rankings_count": len(model_scores),
+            "mean_position": round(sum(positions[model]) / len(positions[model]), 2),
+            "reviews_counted": len(model_scores),
         }
         for model, model_scores in scores.items()
     ]
@@ -443,17 +443,17 @@ def _sum_usage(*usage_lists: List[Optional[Dict[str, Any]]]) -> Dict[str, Any]:
     return {"total_tokens": total_tokens, "total_cost": round(total_cost, 6)}
 
 
-async def generate_conversation_title(user_query: str) -> str:
+async def title_for_conversation(question: str) -> str:
     """Name a conversation after its opening question, for the sidebar."""
     naming_request = (
         "Give this conversation a name for a sidebar list: three to five words "
         "that say what the question below is about.\n"
         "Reply with the name alone, on one line, with no quotation marks and no "
         "closing punctuation.\n\n"
-        f"The question:\n{user_query}\n\n"
+        f"The question:\n{question}\n\n"
         "The name:"
     )
-    response = await query_model(
+    response = await ask_model(
         TITLE_MODEL,
         [{"role": "user", "content": naming_request}],
         timeout=30.0,
@@ -469,90 +469,89 @@ async def generate_conversation_title(user_query: str) -> str:
 
 
 async def run_council_stream(
-    user_query: str,
+    question: str,
     prior_messages: Optional[List[Dict[str, Any]]] = None,
     mode: str = "full",
     web_search: bool = False,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
-    Run the council process, yielding an event dict as each stage progresses.
+    Run one deliberation, yielding an event as each part of it lands.
 
     Modes:
-        "full": Stage 1 → anonymized peer review → chairman synthesis
-        "quick": Stage 1 → chairman synthesis (skips peer review)
+        "full": answers → blind review → ruling
+        "quick": answers → ruling (no review)
 
-    Events: stage1_start, stage1_complete, stage2_start, stage2_complete,
-    stage3_start, stage3_complete, summary. The summary event carries the
-    complete metadata (mapping, aggregates, failures, usage).
+    Events: answers_start, answers_complete, reviews_start, reviews_complete,
+    ruling_start, ruling_complete, summary. The summary event carries the
+    complete metadata (authors, standings, failures, usage).
     """
     history = build_history_messages(prior_messages or [])
 
-    # Stage 1: individual responses
-    yield {"type": "stage1_start"}
-    stage1_results, stage1_failures = await stage1_collect_responses(
-        user_query, history=history, web_search=web_search
+    # Opening: every seat answers independently
+    yield {"type": "answers_start"}
+    answers, answer_failures = await collect_answers(
+        question, history=history, web_search=web_search
     )
-    yield {"type": "stage1_complete", "data": stage1_results,
-           "failures": stage1_failures}
+    yield {"type": "answers_complete", "data": answers,
+           "failures": answer_failures}
 
-    if not stage1_results:
-        details = "; ".join(f"{f['model']}: {f['error']}" for f in stage1_failures)
+    if not answers:
+        details = "; ".join(f"{f['model']}: {f['error']}" for f in answer_failures)
         yield {
             "type": "summary",
             "data": {
-                "stage1": [], "stage2": [],
-                "stage3": {"model": "error",
-                           "response": f"All council models failed to respond. {details}"},
+                "answers": [], "reviews": [],
+                "ruling": {"model": "error",
+                           "text": f"All council models failed to respond. {details}"},
             },
-            "metadata": {"failures": {"stage1": stage1_failures, "stage2": []},
+            "metadata": {"failures": {"answers": answer_failures, "reviews": []},
                          "mode": mode, "web_search": web_search},
         }
         return
 
-    # Stage 2: anonymized peer review (full mode only, needs >= 2 responses)
-    stage2_results: List[Dict[str, Any]] = []
-    stage2_failures: List[Dict[str, str]] = []
-    label_to_model: Dict[str, str] = {}
-    aggregate_rankings: List[Dict[str, Any]] = []
+    # Review: blind refereeing (full mode only, and only with two answers or more)
+    reviews: List[Dict[str, Any]] = []
+    review_failures: List[Dict[str, str]] = []
+    authors: Dict[str, str] = {}
+    standings: List[Dict[str, Any]] = []
 
-    if mode != "quick" and len(stage1_results) >= 2:
-        yield {"type": "stage2_start"}
-        stage2_results, label_to_model, stage2_failures = await stage2_collect_rankings(
-            user_query, stage1_results, history=history
+    if mode != "quick" and len(answers) >= 2:
+        yield {"type": "reviews_start"}
+        reviews, authors, review_failures = await collect_reviews(
+            question, answers, history=history
         )
-        aggregate_rankings = calculate_aggregate_rankings(stage2_results, label_to_model)
+        standings = tally_standings(reviews, authors)
         yield {
-            "type": "stage2_complete",
-            "data": stage2_results,
-            "failures": stage2_failures,
-            "metadata": {"label_to_model": label_to_model,
-                         "aggregate_rankings": aggregate_rankings},
+            "type": "reviews_complete",
+            "data": reviews,
+            "failures": review_failures,
+            "metadata": {"authors": authors,
+                         "standings": standings},
         }
 
-    # Stage 3: chairman synthesis
-    yield {"type": "stage3_start"}
-    stage3_result = await stage3_synthesize_final(
-        user_query, stage1_results, stage2_results,
-        label_to_model=label_to_model,
-        aggregate_rankings=aggregate_rankings,
+    # Ruling: the chair settles it
+    yield {"type": "ruling_start"}
+    ruling = await chair_ruling(
+        question, answers, reviews,
+        authors=authors,
+        standings=standings,
         history=history,
     )
-    yield {"type": "stage3_complete", "data": stage3_result}
+    yield {"type": "ruling_complete", "data": ruling}
 
     # The summary is the authoritative record of the exchange: it is what gets
     # persisted, so a reloaded conversation carries everything the live one did.
     yield {
         "type": "summary",
-        "data": {"stage1": stage1_results, "stage2": stage2_results,
-                 "stage3": stage3_result},
+        "data": {"answers": answers, "reviews": reviews, "ruling": ruling},
         "metadata": {
-            "label_to_model": label_to_model,
-            "aggregate_rankings": aggregate_rankings,
-            "failures": {"stage1": stage1_failures, "stage2": stage2_failures},
+            "authors": authors,
+            "standings": standings,
+            "failures": {"answers": answer_failures, "reviews": review_failures},
             "usage": _sum_usage(
-                [r.get("usage") for r in stage1_results],
-                [r.get("usage") for r in stage2_results],
-                [stage3_result.get("usage")],
+                [r.get("usage") for r in answers],
+                [r.get("usage") for r in reviews],
+                [ruling.get("usage")],
             ),
             "mode": mode,
             "web_search": web_search,
@@ -560,30 +559,25 @@ async def run_council_stream(
     }
 
 
-async def run_full_council(
-    user_query: str,
+async def run_council(
+    question: str,
     prior_messages: Optional[List[Dict[str, Any]]] = None,
     mode: str = "full",
     web_search: bool = False,
 ) -> Tuple[List, List, Dict, Dict]:
     """
-    Run the complete council process non-streaming.
+    Run one deliberation to the end and return it whole.
 
-    Returns:
-        Tuple of (stage1_results, stage2_results, stage3_result, metadata)
+    Returns (answers, reviews, ruling, metadata) — the contents of the summary
+    event, for a caller that does not want the stream.
     """
-    stage1: List = []
-    stage2: List = []
-    stage3: Dict = {}
-    metadata: Dict = {}
-
+    summary: Dict[str, Any] = {}
     async for event in run_council_stream(
-        user_query, prior_messages=prior_messages, mode=mode, web_search=web_search
+        question, prior_messages=prior_messages, mode=mode, web_search=web_search
     ):
         if event["type"] == "summary":
-            stage1 = event["data"]["stage1"]
-            stage2 = event["data"]["stage2"]
-            stage3 = event["data"]["stage3"]
-            metadata = event.get("metadata", {})
+            summary = event
 
-    return stage1, stage2, stage3, metadata
+    data = summary.get("data", {})
+    return (data.get("answers", []), data.get("reviews", []),
+            data.get("ruling", {}), summary.get("metadata", {}))

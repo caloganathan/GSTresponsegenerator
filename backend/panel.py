@@ -20,7 +20,7 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 
 from . import config, defects, grounding, sanitizer
 from .domains import get_pack
-from .openrouter import query_model
+from .openrouter import ask_model
 from .roles import (
     CHAIRMAN_KEY,
     CHAIRMAN_TITLE,
@@ -383,7 +383,7 @@ async def run_panel_stream(
     async def run_counsel(role):
         prompt = build_role_prompt(role, working_matter, pack,
                                    briefing_text, recon_text)
-        result = await query_model(
+        result = await ask_model(
             models.get(role.key, models["chairman"]),
             [{"role": "user", "content": prompt}],
             zdr=zdr,
@@ -441,7 +441,7 @@ async def run_panel_stream(
             role = next(r for r in PANEL_ROLES if r.key == entry["key"])
             peers = [a for a in analyses if a["key"] != entry["key"]]
             prompt = build_cross_exam_prompt(role, working_matter, pack, peers)
-            result = await query_model(
+            result = await ask_model(
                 models.get(role.key, models["chairman"]),
                 [{"role": "user", "content": prompt}],
                 zdr=zdr,
@@ -483,7 +483,7 @@ async def run_panel_stream(
         recon_text,
     )
     chairman_ceiling = config.role_max_tokens("chairman")
-    chairman_result = await query_model(
+    chairman_result = await ask_model(
         models["chairman"],
         [{"role": "user", "content": chairman_prompt}],
         zdr=zdr,
@@ -509,7 +509,7 @@ async def run_panel_stream(
     # answered in prose is asked again, for the object alone.
     if determination is None:
         truncated = chairman_result.get("finish_reason") == "length"
-        retry_result = await query_model(
+        retry_result = await ask_model(
             models["chairman"],
             [{"role": "user", "content": chairman_prompt}] if truncated else [
                 {"role": "user", "content": chairman_prompt},

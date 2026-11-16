@@ -311,27 +311,27 @@ export const api = {
   health: () => json('/api/health'),
 
   // ---- generic council (retained) ----
-  listConversations: () => json('/api/conversations'),
-  createConversation: () =>
+  conversationIndex: () => json('/api/conversations'),
+  openConversation: () =>
     json('/api/conversations', { method: 'POST', body: JSON.stringify({}) }),
-  getConversation: (id) => json(`/api/conversations/${id}`),
+  readConversation: (id) => json(`/api/conversations/${id}`),
   deleteConversation: (id) => json(`/api/conversations/${id}`, { method: 'DELETE' }),
 
-  async sendMessageStream(conversationId, content, options, onEvent) {
+  async askCouncil(conversationId, question, options, onEvent) {
     const response = await fetch(
       apiUrl(`/api/conversations/${conversationId}/message/stream`),
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({
-          content,
+          question,
           mode: options?.mode || 'full',
           web_search: Boolean(options?.webSearch),
         }),
       }
     );
     if (!response.ok) {
-      throw new ApiError(await errorDetail(response, 'Failed to send message'),
+      throw new ApiError(await errorDetail(response, 'The council could not be asked'),
                          response.status);
     }
     await consumeSSE(response, onEvent);
